@@ -163,6 +163,13 @@
     padding:10px 12px;
   }
   .invoice-divider-code{ font-weight:400; color:var(--sesame); font-size:0.78rem; }
+  /* Outputs tab: whole-invoice select/deselect sits in the divider heading.
+     The label wraps the text too, so clicking anywhere along the heading toggles. */
+  .invoice-divider label.invoice-check{
+    display:flex; align-items:center; gap:9px; cursor:pointer; margin:0;
+    color:inherit; font-size:inherit; font-weight:inherit; letter-spacing:inherit;
+  }
+  .invoice-divider label.invoice-check input{ cursor:pointer; width:16px; height:16px; flex-shrink:0; }
   .pill{display:inline-block; padding:2px 9px; border-radius:20px; font-size:0.72rem; font-weight:700;}
   .pill.ok{background:var(--ok-bg); color:var(--ok);}
   .pill.warn{background:var(--warn-bg); color:var(--warn);}
@@ -197,20 +204,29 @@
     margin:0 auto 10px;
     overflow:hidden;
   }
+  /* flex-shrink:0 on the two text rows is load-bearing: `overflow:hidden`
+     makes a flex item's automatic minimum size resolve to 0, so if the label
+     content ever exceeds the label height the flex algorithm would collapse
+     the SKU/name row to nothing (the barcode, with visible overflow, keeps its
+     size and the text silently disappears). Pin both rows instead. */
   .dymo-label .name{
     font-size:calc(var(--label-h, 36mm) * 0.155);
     font-weight:800; line-height:1.15; text-transform:uppercase;
     white-space:nowrap; overflow:hidden;
-    display:flex; align-items:baseline;
+    display:flex; align-items:baseline; flex-shrink:0;
   }
   .dymo-label .name .sku-part{flex-shrink:0;}
   .dymo-label .name .name-part{min-width:0;}
   .dymo-label .midrow{
     display:flex; justify-content:flex-start; gap:6mm; flex-wrap:wrap;
     font-size:calc(var(--label-h, 36mm) * 0.125); font-weight:700; margin-top:2px;
+    flex-shrink:0;
   }
   .dymo-label .barcode-wrap{display:flex; justify-content:center; margin-top:2px;}
-  .dymo-label svg{height:calc(var(--label-h, 36mm) * 0.32); max-height:16mm; max-width:100%;}
+  /* The barcode is a canvas-rendered PNG whose width/height are set explicitly
+     per-label in JS (see printExpandedLabels) — CSS only needs to keep it from
+     overflowing in unexpected cases. */
+  .dymo-label .barcode-wrap img{max-width:100%; max-height:13mm;}
 
   footer.hint-bar{
     text-align:center; padding:14px; font-size:0.78rem; color:var(--crust-soft);
@@ -437,8 +453,9 @@
           <button class="big" id="printSelectedBtn">🖨 Print labels</button>
           <button class="ghost" id="selectAllLabelsBtn">Select all</button>
         </div>
+        <div class="status-banner" id="printBanner"></div>
         <p style="font-size:0.82rem; color:var(--crust-soft); line-height:1.5; margin-top:10px;">
-          Make sure the label size above matches what's loaded in the printer, then choose the same size in the print dialog that appears.
+          Labels go straight to your default Windows printer — make sure the label size above matches what's loaded in it.
         </p>
       </div>
     </section>
@@ -454,6 +471,7 @@
           <div class="spacer"></div>
           <button class="ghost" id="exportDbBtn">⬇ Export database CSV</button>
         </div>
+        <div class="status-banner" id="dbPrintBanner"></div>
         <div id="dbTableWrap"></div>
       </div>
     </section>
@@ -1025,17 +1043,11 @@
     return state.lines.filter(function(l){ return l.dayKey === todayKey(); });
   }
 
-  function renderReview(){
-    var lines = todaysLines();
-    var wrap = document.getElementById('reviewTableWrap');
-    document.getElementById('reviewSummary').textContent = lines.length + ' line' + (lines.length===1?'':'s') + ' received today';
-
-    if(!lines.length){
-      wrap.innerHTML = '<div class="empty"><div class="big-icon">📋</div>No items received yet today.<br>Go to the Receive tab and scan the first item.</div>';
-      return;
-    }
-
-    // Group lines by invoice code, preserving the order invoices were started in.
+  // Invoice grouping is shared by the Today's-list table and the Outputs-tab
+  // label picker so both show the same invoices, in the same order, under the
+  // same headings.
+  function groupLinesByInvoice(lines){
+    // Preserves the order invoices were started in.
     var groups = [];
     var groupIndex = {};
     lines.forEach(function(l){
@@ -1046,18 +1058,30 @@
       }
       groups[groupIndex[code]].lines.push(l);
     });
+    return groups;
+  }
 
-    function invoiceLabelFromCode(code){
-      // code looks like "29072026-002" — pull just the sequence part for the divider label.
-      var parts = String(code).split('-');
-      var seq = parts.length > 1 ? parts[parts.length - 1] : code;
-      return 'Invoice ' + seq;
+  function invoiceDividerLabelHtml(code){
+    // code looks like "29072026-002" — pull just the sequence part for the divider label.
+    var parts = String(code).split('-');
+    var seq = parts.length > 1 ? parts[parts.length - 1] : code;
+    return escapeHtml('Invoice ' + seq) +
+      ' <span class="invoice-divider-code">(' + escapeHtml(code) + ')</span>';
+  }
+
+  function renderReview(){
+    var lines = todaysLines();
+    var wrap = document.getElementById('reviewTableWrap');
+    document.getElementById('reviewSummary').textContent = lines.length + ' line' + (lines.length===1?'':'s') + ' received today';
+
+    if(!lines.length){
+      wrap.innerHTML = '<div class="empty"><div class="big-icon">📋</div>No items received yet today.<br>Go to the Receive tab and scan the first item.</div>';
+      return;
     }
 
-    var rows = groups.map(function(group){
+    var rows = groupLinesByInvoice(lines).map(function(group){
       var dividerRow = '<tr class="invoice-divider"><td colspan="7">' +
-        escapeHtml(invoiceLabelFromCode(group.code)) +
-        ' <span class="invoice-divider-code">(' + escapeHtml(group.code) + ')</span></td></tr>';
+        invoiceDividerLabelHtml(group.code) + '</td></tr>';
       var groupRows = group.lines.map(function(l){
         var flagged = !l.batch || !l.bbe;
         var expiryNote = '';
@@ -1216,15 +1240,68 @@
       wrap.innerHTML = '<div class="empty">No items to label yet today.</div>';
       return;
     }
-    wrap.innerHTML = '<table><thead><tr><th></th><th>Product</th><th>Batch</th><th>BBE</th><th>Copies</th></tr></thead><tbody>' +
-      lines.map(function(l){
+
+    // Grouped by invoice, matching the Today's-list tab. Each invoice heading
+    // carries its own checkbox so a whole delivery can be selected or skipped
+    // in one click rather than row by row.
+    var rows = groupLinesByInvoice(lines).map(function(group, groupIdx){
+      var dividerRow = '<tr class="invoice-divider"><td colspan="5">' +
+        '<label class="invoice-check">' +
+        '<input type="checkbox" class="invoiceCheck" data-group="' + groupIdx + '" checked> ' +
+        '<span>' + invoiceDividerLabelHtml(group.code) + '</span>' +
+        '</label></td></tr>';
+      var groupRows = group.lines.map(function(l){
         var defaultCopies = (l.lots && l.lots > 0) ? Math.round(l.lots) : 1;
-        return '<tr><td><input type="checkbox" class="labelCheck" data-id="' + l.id + '" checked></td>' +
+        return '<tr><td><input type="checkbox" class="labelCheck" data-id="' + l.id + '" data-group="' + groupIdx + '" checked></td>' +
           '<td>' + escapeHtml(l.name) + ' <span style="color:var(--crust-soft);font-size:0.78rem;">('+escapeHtml(l.sku)+')</span></td>' +
           '<td>' + escapeHtml(l.batch||'—') + '</td><td>' + fmtDate(l.bbe) + '</td>' +
           '<td><input type="number" class="labelCopies" data-id="' + l.id + '" min="1" step="1" value="' + defaultCopies + '" style="width:60px; padding:6px 8px; font-size:0.9rem;"></td>' +
           '</tr>';
-      }).join('') + '</tbody></table>';
+      }).join('');
+      return dividerRow + groupRows;
+    }).join('');
+
+    wrap.innerHTML = '<table><thead><tr><th></th><th>Product</th><th>Batch</th><th>BBE</th><th>Copies</th></tr></thead><tbody>' +
+      rows + '</tbody></table>';
+
+    // Invoice heading → toggle every row under it.
+    wrap.querySelectorAll('.invoiceCheck').forEach(function(inv){
+      inv.addEventListener('change', function(){
+        labelChecksInGroup(wrap, inv.getAttribute('data-group')).forEach(function(c){
+          c.checked = inv.checked;
+        });
+      });
+    });
+
+    // Row → keep its invoice heading in step: ticked when all its rows are,
+    // indeterminate while only some are.
+    wrap.querySelectorAll('.labelCheck').forEach(function(c){
+      c.addEventListener('change', function(){
+        syncInvoiceCheck(wrap, c.getAttribute('data-group'));
+      });
+    });
+  }
+
+  function labelChecksInGroup(wrap, groupIdx){
+    return Array.from(wrap.querySelectorAll('.labelCheck')).filter(function(c){
+      return c.getAttribute('data-group') === groupIdx;
+    });
+  }
+
+  function syncInvoiceCheck(wrap, groupIdx){
+    var inv = wrap.querySelector('.invoiceCheck[data-group="' + groupIdx + '"]');
+    if(!inv) return;
+    var boxes = labelChecksInGroup(wrap, groupIdx);
+    var checked = boxes.filter(function(c){ return c.checked; }).length;
+    inv.checked = checked === boxes.length;
+    inv.indeterminate = checked > 0 && checked < boxes.length;
+  }
+
+  function syncAllInvoiceChecks(){
+    var wrap = document.getElementById('labelPickList');
+    wrap.querySelectorAll('.invoiceCheck').forEach(function(inv){
+      syncInvoiceCheck(wrap, inv.getAttribute('data-group'));
+    });
   }
 
   // ---------- Label size handling ----------
@@ -1247,42 +1324,104 @@
 
   document.getElementById('selectAllLabelsBtn').addEventListener('click', function(){
     document.querySelectorAll('.labelCheck').forEach(function(c){ c.checked = true; });
+    syncAllInvoiceChecks();
   });
 
   // Shared by the Outputs-tab batch print and the Database-tab single reprint.
   // expandedLines is one entry per physical label — each needs at least
   // {sku, name, batch, bbe}.
+  // Prints straight to the default printer with no dialog. A plain
+  // window.print() would open WebView2's native OS print dialog instead, which
+  // has no preview and made staff pick the paper size by hand every time.
+  //
+  // Only fall back to window.print() when the backend genuinely has no silent
+  // print (non-Windows dev builds) — falling back on *any* error is what used
+  // to make the system dialog reappear whenever printing failed, hiding the
+  // real error behind a dialog that then printed a blank label.
+  // Printing is silent now, so there's no dialog to tell staff anything
+  // happened — report into whichever tab they actually triggered it from.
+  function printFeedback(kind, msg){
+    var onDatabaseTab = document.getElementById('view-database').classList.contains('active');
+    showBanner(onDatabaseTab ? 'dbPrintBanner' : 'printBanner', kind, msg);
+  }
+
+  function triggerPrint(labelCount){
+    invoke('print_labels', { widthMm: currentLabelSize.mmW, heightMm: currentLabelSize.mmH })
+      .then(function(){
+        printFeedback('ok', '✓ Sent ' + labelCount + ' label' + (labelCount === 1 ? '' : 's') + ' to the printer.');
+      })
+      .catch(function(err){
+        var msg = String(err && err.message ? err.message : err || '');
+        if(msg.indexOf('only implemented on Windows') !== -1){ window.print(); return; }
+        printFeedback('warn', 'Could not print the labels. ' + msg);
+      });
+  }
+
+  // Barcodes are drawn to a <canvas> and embedded as a PNG rather than
+  // rendered as inline SVG. WebView2's print pipeline mis-rasterizes the
+  // SVG form — the bars collapse into a solid black bar, confirmed by
+  // dumping WebView2's own internally-rendered PDF, which showed the same
+  // corruption before anything reached the printer. A pre-rasterized bitmap
+  // gives the print pipeline nothing to re-scale, so what we draw is exactly
+  // what prints.
+  var BARCODE_RASTER_SCALE = 4; // ~450 DPI at final label size — well above any printer's resolution
+
   function printExpandedLabels(expandedLines){
     var printArea = document.getElementById('printArea');
     var barcodeLibOk = (typeof JsBarcode !== 'undefined');
 
+    // The label height (and therefore how much room the barcode has) varies
+    // with the selected Dymo label size. Kept deliberately modest so the
+    // SKU/name and LOT/BBE rows always have room above it — the barcode is
+    // the most forgiving element here, since scanners cope fine with a
+    // shorter symbol but staff need the text legible.
+    var barcodeHeightMm = Math.min(currentLabelSize.mmH * 0.24, 13);
+    var maxBarcodeWidthMm = currentLabelSize.mmW * 0.93;
+
     printArea.innerHTML = expandedLines.map(function(l, idx){
-      var svgId = 'bc_' + idx;
+      var barcodeImg = '';
+      if(barcodeLibOk){
+        try{
+          var canvas = document.createElement('canvas');
+          JsBarcode(canvas, l.sku + '|' + l.batch, {
+            format: 'CODE128', displayValue: false, margin: 0,
+            height: 40 * BARCODE_RASTER_SCALE, width: 1.6 * BARCODE_RASTER_SCALE
+          });
+          // Scale to fit the label, preserving the barcode's true aspect ratio
+          // so the bar/gap proportions that make it scannable stay intact.
+          var wMm = barcodeHeightMm * (canvas.width / canvas.height);
+          var hMm = barcodeHeightMm;
+          if(wMm > maxBarcodeWidthMm){
+            wMm = maxBarcodeWidthMm;
+            hMm = wMm * (canvas.height / canvas.width);
+          }
+          barcodeImg = '<img src="' + canvas.toDataURL('image/png') + '" alt="" ' +
+            'style="width:' + wMm + 'mm; height:' + hMm + 'mm;">';
+        }catch(e){ /* leave blank if a value has unsupported characters */ }
+      }
       return '<div class="dymo-label">' +
         '<div class="name"><span class="sku-part">' + escapeHtml(l.sku) + '&nbsp;</span><span class="name-part">' + escapeHtml(l.name) + '</span></div>' +
         '<div class="midrow"><span>LOT: ' + escapeHtml(l.batch) + '</span><span>BBE: ' + fmtDate(l.bbe) + '</span></div>' +
-        '<div class="barcode-wrap"><svg id="' + svgId + '"></svg></div>' +
+        '<div class="barcode-wrap">' + barcodeImg + '</div>' +
         '</div>';
     }).join('');
 
     // Shrink only the product-name text to fit the label width, leaving the
     // SKU at full size since it's a fixed lookup key people need to read reliably.
+    //
+    // #printArea is display:none on screen (it only becomes visible inside
+    // @media print), and a display:none element has scrollWidth/clientWidth of
+    // 0 — so the shrink loop measured 0 > 0, did nothing, and long product
+    // names printed clipped. Lay the labels out off-screen for the duration of
+    // the measurement so the widths are real, then hand display back to CSS.
+    printArea.style.cssText = 'display:block; position:absolute; left:-10000px; top:0;';
     shrinkNameTextToFit();
+    printArea.style.cssText = '';
 
-    if(barcodeLibOk){
-      expandedLines.forEach(function(l, idx){
-        var barcodeValue = l.sku + '|' + l.batch;
-        try{
-          JsBarcode('#bc_' + idx, barcodeValue, {
-            format: 'CODE128', displayValue: false, margin: 0, height: 40, width: 1.6
-          });
-        }catch(e){ /* leave blank if a value has unsupported characters */ }
-      });
-      window.print();
-    } else {
-      showBanner('scanBanner','warn','Barcode library could not load (no internet right now). Labels will print with text only, no scannable barcode — try again once online.');
-      window.print();
+    if(!barcodeLibOk){
+      printFeedback('warn','Barcode library could not load. Labels will print with text only, no scannable barcode.');
     }
+    triggerPrint(expandedLines.length);
   }
 
   document.getElementById('printSelectedBtn').addEventListener('click', function(){
