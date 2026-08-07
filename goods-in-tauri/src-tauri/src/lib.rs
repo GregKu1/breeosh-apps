@@ -60,6 +60,54 @@ fn write_products(data: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Rejects anything that could climb out of the exports directory. These
+/// names are built by the frontend rather than typed by hand, but a path
+/// separator slipping into a filename would silently write outside the app
+/// folder, so they're checked here rather than trusted.
+fn safe_path_component(part: &str, what: &str) -> Result<String, String> {
+    let trimmed = part.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{what} is empty"));
+    }
+    if trimmed == "." || trimmed == ".." || trimmed.contains("..") {
+        return Err(format!("{what} is not a valid folder name"));
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains(':') {
+        return Err(format!("{what} must not contain a path separator"));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Writes a finished CSV into `<app folder>/<folder>/<week>/<filename>`,
+/// creating the folders on the way. Saving next to the executable keeps the
+/// exports beside `products.json`, so backing the whole thing up is still a
+/// matter of copying one folder.
+#[tauri::command]
+fn save_export(
+    folder: String,
+    week: String,
+    filename: String,
+    contents: String,
+) -> Result<String, String> {
+    let folder = safe_path_component(&folder, "Folder name")?;
+    let week = safe_path_component(&week, "Week folder name")?;
+    let filename = safe_path_component(&filename, "File name")?;
+
+    let base = products_path()
+        .map_err(|e| e.to_string())?
+        .parent()
+        .ok_or_else(|| "could not find the application folder".to_string())?
+        .to_path_buf();
+
+    let dir = base.join(&folder).join(&week);
+    fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+
+    let path = dir.join(&filename);
+    fs::write(&path, contents).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+
+    Ok(path.to_string_lossy().to_string())
+}
+
 // Prints the labels straight to the default printer with no dialog at all,
 // via WebView2's Print() API (the COM equivalent of PrintAsync). The page
 // size is pinned to the label size in inches — WebView2's unit here — so it
@@ -231,6 +279,44 @@ async fn save_debug_pdf(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::safe_path_component;
+
+    #[test]
+    fn accepts_the_names_the_app_actually_generates() {
+        for name in [
+            "Craftybase exports",
+            "Invoice list backups",
+            "week-commencing-2026-08-03",
+            "craftybase-purchases-2026-08-06.csv",
+        ] {
+            assert!(safe_path_component(name, "x").is_ok(), "rejected {name}");
+        }
+    }
+
+    #[test]
+    fn rejects_attempts_to_escape_the_exports_folder() {
+        for name in [
+            "..",
+            ".",
+            "../secrets",
+            "a/b",
+            "a\\b",
+            "C:windows",
+            "",
+            "   ",
+        ] {
+            assert!(safe_path_component(name, "x").is_err(), "accepted {name:?}");
+        }
+    }
+
+    #[test]
+    fn trims_surrounding_whitespace() {
+        assert_eq!(safe_path_component("  week-1  ", "x").unwrap(), "week-1");
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -238,6 +324,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             read_products,
             write_products,
+            save_export,
             print_labels,
             save_debug_pdf
         ])

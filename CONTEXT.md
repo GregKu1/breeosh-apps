@@ -81,18 +81,28 @@ v1** namespace. This is Tauri **v2**, where the global is
 
 ## Build target reminder
 
-- **Primary target is Windows x86_64** (the bakery runs Windows PCs). All
-  development/testing so far has been on Linux (this machine) — `cargo
-  check` and `npm run tauri dev` both work cleanly here and the webview
-  window launches and renders correctly (visually confirmed).
-- **Windows `.msi`/`.exe` has not been built or tested anywhere yet.** That
-  needs an actual Windows machine or CI runner — cross-compiling Tauri's
-  Windows bundle from Linux isn't reliable enough to trust for a production
-  handoff to non-technical bakery staff.
-- Linux dev loop: `cd goods-in-tauri && npm install && npm run tauri dev`.
-  Debug binary only: `npm run tauri build -- --debug`. Full local release
-  (Linux `.deb`/`.AppImage`, useful only as a sanity check, not the deliverable):
-  `npm run tauri build`.
+- **The bakery PC is 32-bit Windows** (Intel Atom, 4 core, 2GB RAM, 32GB disk).
+  Build with `npm run tauri build -- --target i686-pc-windows-msvc`
+  (needs `rustup target add i686-pc-windows-msvc` once). An x86_64 build fails
+  to launch there with "This app can't run on your PC" — the PE loader can't
+  load a 64-bit binary on 32-bit Windows. A 32-bit build also runs fine on
+  64-bit Windows via WoW64, so i686 is the safe single target to ship.
+  Build **release**, not `--debug`, given the 2GB RAM.
+  (An earlier version of this file assumed x86_64. That was never verified
+  against the real machine and was wrong — hence this note.)
+- Development has since moved to a Windows machine; `.msi` and NSIS
+  `-setup.exe` bundles now build locally for both x86_64 and i686.
+- Two things to watch when deploying to that PC:
+  - **WebView2 x86 runtime.** 32-bit Windows means Windows 10 or older
+    (Windows 11 has no 32-bit edition), and only Windows 11 preinstalls
+    WebView2 — so the runtime is probably absent. The installer's default
+    `webviewInstallMode` downloads it at install time, which needs internet on
+    that PC. Switch to `offlineInstaller` in `tauri.conf.json` if it has none.
+  - **`products.json` is written next to the `.exe`** (see `lib.rs`). If the
+    app is *installed* into `C:\Program Files\`, that directory isn't
+    writable by a standard user and saving the product database may fail.
+    Running it from a normal folder (e.g. `C:\GoodsIn\`) sidesteps this and
+    matches the "database sits next to the app" design.
 
 ## Not done / possibly worth revisiting
 

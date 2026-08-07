@@ -142,6 +142,27 @@
   .status-banner.ok{background:var(--ok-bg); color:var(--ok);}
   .status-banner.warn{background:var(--warn-bg); color:var(--warn);}
 
+  /* Price field: the £ sits inside the input, and the box is only as wide as a
+     realistic price needs — a full-width box next to "number of lots" read as
+     though it wanted a long value. */
+  .money-input{ position:relative; max-width:150px; }
+  .money-input .money-symbol{
+    position:absolute; left:12px; top:50%; transform:translateY(-50%);
+    color:var(--crust-soft); font-weight:700; pointer-events:none;
+  }
+  .money-input input{ padding-left:26px; }
+
+  /* The barcode of the item being confirmed — the scan bar is hidden at this
+     point, so this is the only place the number is still visible. */
+  .scanned-ean{
+    display:inline-flex; align-items:center; gap:8px;
+    font-size:0.85rem; color:var(--crust-soft); margin-bottom:10px;
+  }
+  .scanned-ean b{
+    font-family:'Consolas','Menlo',monospace; font-size:0.95rem;
+    color:var(--rye-dark); letter-spacing:0.04em;
+  }
+
   .lookup-result{
     display:flex; gap:14px; align-items:flex-start; padding:14px; background:var(--sesame);
     border-radius:8px; margin-top:4px; margin-bottom:16px;
@@ -173,7 +194,13 @@
   .pill{display:inline-block; padding:2px 9px; border-radius:20px; font-size:0.72rem; font-weight:700;}
   .pill.ok{background:var(--ok-bg); color:var(--ok);}
   .pill.warn{background:var(--warn-bg); color:var(--warn);}
-  .row-actions{display:flex; gap:8px;}
+  /* Deliberately NOT display:flex. Setting flex on a <td> overrides
+     display:table-cell, so the cell stops sharing the row's layout and its
+     border-bottom lands a pixel or two off from the other cells — which reads
+     as the row divider tearing/stepping at the last column. Keep it a real
+     table cell and space the buttons with margins instead. */
+  .row-actions{white-space:nowrap;}
+  .row-actions button + button{margin-left:8px;}
   .row-actions button{
     font-family:inherit; font-size:0.8rem; padding:6px 10px; border-radius:6px; border:1px solid var(--line);
     background:#fff; cursor:pointer; color:var(--crust-soft); font-weight:600;
@@ -244,6 +271,19 @@
   .search-result-item .name{ font-weight:600; color:var(--rye-dark); }
   .search-result-item .meta{ font-size:0.8rem; color:var(--crust-soft); }
   .search-no-results{ font-size:0.88rem; color:var(--crust-soft); padding:8px 2px; }
+  .hint-inline{ display:block; font-size:0.76rem; color:var(--crust-soft); margin-top:5px; line-height:1.4; }
+  .no-barcode-tag{
+    display:inline-block; padding:2px 8px; border-radius:20px;
+    background:var(--sesame); color:var(--crust-soft);
+    font-size:0.72rem; font-weight:700; letter-spacing:0.01em;
+  }
+  .add-no-barcode{
+    display:block; width:100%; margin-top:8px; text-align:left;
+    font-family:inherit; font-size:0.88rem; font-weight:600;
+    padding:10px 12px; border-radius:8px; cursor:pointer;
+    border:1px dashed var(--line); background:#fffdf9; color:var(--crust-soft);
+  }
+  .add-no-barcode:hover{ border-color:var(--proof); color:var(--crust); }
 
   .modal-backdrop{
     display:none; position:fixed; inset:0; background:rgba(58,43,34,0.5); z-index:50;
@@ -255,6 +295,16 @@
     max-height:90vh; overflow:auto;
   }
   .modal h3{margin-top:0; color:var(--rye-dark);}
+
+  /* Two-option picker (e.g. invoice date: today vs. a chosen date). */
+  .choice-row{ display:flex; gap:10px; }
+  .choice{
+    flex:1; font-family:inherit; font-size:0.95rem; font-weight:600;
+    padding:12px 14px; border-radius:8px; cursor:pointer;
+    border:2px solid var(--line); background:#fffdf9; color:var(--crust-soft);
+  }
+  .choice:hover{ border-color:var(--proof); }
+  .choice.selected{ border-color:var(--proof); background:var(--proof); color:var(--crust); }
 
   #printArea{ display:none; }
 
@@ -308,22 +358,19 @@
       </div>
       <div class="status-banner" id="scanBanner"></div>
 
-      <div class="card">
+      <div class="card" id="scanCard">
         <h2>1. Scan the barcode, or search by name
-          <span class="hint">Aim the scanner at the EAN-13 on the package — it types automatically. No barcode handy? Type the product name instead.</span>
+          <span class="hint">Aim the scanner at the EAN-13 on the package — it types automatically. No barcode handy? Just type the product name instead.</span>
         </h2>
         <div class="scan-row">
-          <input type="text" id="scanInput" placeholder="Scan here…" autofocus inputmode="numeric">
+          <input type="text" id="scanInput" placeholder="Scan a barcode, or type a product name…" autofocus autocomplete="off">
         </div>
-        <div class="field" style="margin-top:14px; margin-bottom:0;">
-          <label>Or search your product database by name</label>
-          <input type="text" id="nameSearchInput" placeholder="Start typing a product name…" autocomplete="off">
-          <div id="nameSearchResults"></div>
-        </div>
+        <div id="nameSearchResults"></div>
       </div>
 
       <div class="card" id="productCard" style="display:none;">
         <h2 id="productCardTitle">2. Confirm the product</h2>
+        <div class="scanned-ean" id="scannedEanLine"></div>
         <div class="lookup-result" id="lookupResult"></div>
 
         <div class="field" style="margin-top:16px;" id="newProductNameField">
@@ -375,9 +422,9 @@
           </div>
           <div class="field">
             <label>Price per lot</label>
-            <div style="position:relative;">
-              <span style="position:absolute; left:12px; top:50%; transform:translateY(-50%); color:var(--crust-soft); font-weight:700;">£</span>
-              <input type="number" id="fPrice" min="0" step="any" placeholder="0.00" style="padding-left:26px;">
+            <div class="money-input">
+              <span class="money-symbol">£</span>
+              <input type="number" id="fPrice" min="0" step="any" placeholder="0.00">
             </div>
           </div>
         </div>
@@ -434,7 +481,14 @@
           Note: Craftybase's purchase importer does not have a field for expiry date — only lot number.
           Keep the "full receiving archive" file (or these printed labels) as your BBE record.
         </p>
+        <p style="font-size:0.82rem; color:var(--crust-soft); line-height:1.5; margin-top:10px;">
+          A copy of both files is saved automatically once the day is finished, into
+          <b>Craftybase exports</b> and <b>Invoice list backups</b> in the app's folder, filed one
+          folder per week. Nothing needs pressing — downloading above is only for when you want the
+          file to hand right now.
+        </p>
       </div>
+
 
       <div class="card">
         <h2>Print labels
@@ -494,13 +548,38 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="newInvoiceModal">
+  <div class="modal">
+    <h3>Start a new invoice</h3>
+    <p style="margin-top:0; color:var(--crust-soft); font-size:0.9rem;">
+      Everything you scan from now on is recorded under a new purchase code.
+      Only do this when you're starting a different delivery or invoice.
+    </p>
+    <p id="niError" style="color:var(--warn); font-weight:600; display:none;"></p>
+    <label>Date of invoice</label>
+    <div class="choice-row">
+      <button type="button" class="choice selected" id="niModeToday">Today</button>
+      <button type="button" class="choice" id="niModePick">Select date…</button>
+    </div>
+    <div class="field" id="niDateField" style="display:none; margin-top:12px;">
+      <label>Invoice date</label>
+      <input type="date" id="niDate">
+    </div>
+    <div class="toolbar">
+      <button class="big" id="niStart">Start invoice</button>
+      <button class="ghost" id="niCancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="editProductModal">
   <div class="modal">
     <h3>Edit product</h3>
     <p id="epError" style="color:var(--warn); font-weight:600; display:none; margin-top:0;"></p>
     <div class="field">
       <label>EAN-13 barcode</label>
-      <input type="text" id="epEan" disabled>
+      <input type="text" id="epEan" autocomplete="off" placeholder="Leave blank if this item has no barcode">
+      <span class="hint-inline">Changing this re-files the product under the new barcode. Leave it blank for items with no barcode — they're found by name instead. Items already received keep the barcode they were scanned with.</span>
     </div>
     <div class="field">
       <label>Product name</label>
@@ -673,23 +752,70 @@
     return dd+mm+yyyy;
   }
 
+  function dateKeyFromISO(iso){
+    // "2026-08-06" -> "06082026"
+    var p = String(iso).split('-');
+    if(p.length !== 3) return todayDateKey();
+    return p[2] + p[1] + p[0];
+  }
+
+  function purchaseDateFromInvoiceCode(code){
+    // "06082026-001" -> "06/08/2026". Falls back to today for anything that
+    // doesn't parse, including lines from before invoice dates were settable.
+    var m = /^(\d{2})(\d{2})(\d{4})-/.exec(String(code || ''));
+    if(m) return m[1] + '/' + m[2] + '/' + m[3];
+    var d = new Date();
+    return String(d.getDate()).padStart(2,'0') + '/' +
+           String(d.getMonth()+1).padStart(2,'0') + '/' + d.getFullYear();
+  }
+
+  // Next free sequence number for a given date, worked out from the invoice
+  // codes already used on that date. Reading it back from the lines means
+  // back-dating to a day that already has invoices continues its numbering
+  // rather than colliding with it.
+  function nextSeqForDate(dateKey){
+    var max = 0;
+    state.lines.forEach(function(l){
+      var code = String(l.invoiceCode || '');
+      if(code.indexOf(dateKey + '-') === 0){
+        var n = parseInt(code.slice(dateKey.length + 1), 10);
+        if(!isNaN(n) && n > max) max = n;
+      }
+    });
+    var saved = loadJSON(INVOICE_KEY, null);
+    if(saved && saved.dateKey === dateKey && saved.seq > max) max = saved.seq;
+    return max + 1;
+  }
+
+  function makeInvoice(dateKey, seq, manualDate){
+    return {
+      dateKey: dateKey,
+      seq: seq,
+      code: dateKey + '-' + String(seq).padStart(3,'0'),
+      // Remembered so a deliberately back-dated invoice isn't silently
+      // rolled over by the new-day check below, but also doesn't linger
+      // past the day it was set on.
+      manualDate: !!manualDate,
+      setOnDay: todayDateKey()
+    };
+  }
+
   function loadActiveInvoice(){
     var saved = loadJSON(INVOICE_KEY, null);
-    var dateKey = todayDateKey();
-    if(saved && saved.dateKey === dateKey){
-      return saved;
+    var today = todayDateKey();
+    if(saved){
+      // Old saved invoices (before dates were settable) have no manualDate /
+      // setOnDay — they behave exactly as they used to: valid only for today.
+      var stillValid = saved.manualDate ? saved.setOnDay === today : saved.dateKey === today;
+      if(stillValid) return saved;
     }
-    // No saved invoice for today yet — start at 001 automatically.
-    var fresh = { dateKey: dateKey, seq: 1, code: dateKey + '-001' };
+    var fresh = makeInvoice(today, nextSeqForDate(today), false);
     saveJSON(INVOICE_KEY, fresh);
     return fresh;
   }
 
-  function startNewInvoice(){
-    var dateKey = todayDateKey();
-    var current = loadActiveInvoice();
-    var nextSeq = (current.dateKey === dateKey ? current.seq : 0) + 1;
-    var fresh = { dateKey: dateKey, seq: nextSeq, code: dateKey + '-' + String(nextSeq).padStart(3,'0') };
+  function startNewInvoice(dateKey, manualDate){
+    var fresh = makeInvoice(dateKey, nextSeqForDate(dateKey), manualDate);
     saveJSON(INVOICE_KEY, fresh);
     return fresh;
   }
@@ -699,16 +825,51 @@
     document.getElementById('invoiceLabel').textContent = 'Invoice ' + inv.seq + ' — ' + inv.code;
   }
 
+  // ---------- New invoice (with optional back-dating) ----------
+  var newInvoiceModal = document.getElementById('newInvoiceModal');
+
   document.getElementById('newInvoiceBtn').addEventListener('click', function(){
-    confirmAction(
-      'Start a new invoice?',
-      'Every item you scan from now on will be recorded under a new purchase code. Only do this when you\'re starting a new delivery/invoice.',
-      function(){
-        startNewInvoice();
-        renderInvoiceBadge();
-        showBanner('scanBanner','ok','✓ Started a new invoice. New items will use the new purchase code.');
+    document.getElementById('niError').style.display = 'none';
+    document.getElementById('niDate').value = new Date().toISOString().slice(0,10);
+    setInvoiceDateMode('today');
+    newInvoiceModal.classList.add('show');
+  });
+
+  function setInvoiceDateMode(mode){
+    var pickingDate = mode === 'pick';
+    document.getElementById('niModeToday').classList.toggle('selected', !pickingDate);
+    document.getElementById('niModePick').classList.toggle('selected', pickingDate);
+    document.getElementById('niDateField').style.display = pickingDate ? 'block' : 'none';
+  }
+  document.getElementById('niModeToday').addEventListener('click', function(){ setInvoiceDateMode('today'); });
+  document.getElementById('niModePick').addEventListener('click', function(){ setInvoiceDateMode('pick'); });
+
+  document.getElementById('niCancel').addEventListener('click', function(){
+    newInvoiceModal.classList.remove('show');
+  });
+
+  document.getElementById('niStart').addEventListener('click', function(){
+    var pickingDate = document.getElementById('niModePick').classList.contains('selected');
+    var dateKey, manual = false;
+
+    if(pickingDate){
+      var iso = document.getElementById('niDate').value;
+      if(!iso){
+        var err = document.getElementById('niError');
+        err.textContent = 'Choose a date, or switch back to "Today".';
+        err.style.display = 'block';
+        return;
       }
-    );
+      dateKey = dateKeyFromISO(iso);
+      manual = true;
+    } else {
+      dateKey = todayDateKey();
+    }
+
+    var inv = startNewInvoice(dateKey, manual);
+    newInvoiceModal.classList.remove('show');
+    renderInvoiceBadge();
+    showBanner('scanBanner','ok','✓ Started invoice ' + inv.code + '. New items will use this purchase code.');
   });
 
   document.getElementById('todayLabel').textContent = todayStr();
@@ -738,29 +899,67 @@
     document.getElementById(id).className = 'status-banner';
   }
 
-  // ---------- Scan handling ----------
+  // ---------- Scan / search (one combined bar) ----------
+  // A barcode scanner just types digits and presses Enter, so the same box can
+  // serve both jobs: digits + Enter is treated as a scan, anything else
+  // searches the product database by name as you type.
   var scanInput = document.getElementById('scanInput');
+  var nameSearchResults = document.getElementById('nameSearchResults');
+
+  function looksLikeBarcode(v){
+    return /^[0-9]{4,}$/.test(v);
+  }
+
+  // Not everything has an EAN — loose goods and a lot of trade ingredients
+  // arrive with no barcode at all. The product database is keyed by barcode,
+  // so those get an internal key instead. Real barcodes are digits only, so
+  // the "NB-" prefix can never collide with one, and any entry carrying it is
+  // displayed as having no barcode rather than showing the internal key.
+  var NO_BARCODE_PREFIX = 'NB-';
+  function isNoBarcodeKey(k){
+    return String(k || '').indexOf(NO_BARCODE_PREFIX) === 0;
+  }
+  function newNoBarcodeKey(){
+    return NO_BARCODE_PREFIX + Date.now() + '-' + Math.floor(Math.random()*1000);
+  }
+  function barcodeForDisplay(k){
+    return isNoBarcodeKey(k) ? '—' : k;
+  }
+  // Blank rather than the internal key when exporting, so the spreadsheet
+  // shows an empty barcode cell instead of something meaningless.
+  function barcodeForExport(k){
+    return isNoBarcodeKey(k) ? '' : k;
+  }
+
   scanInput.addEventListener('keydown', function(e){
-    if(e.key === 'Enter'){
-      e.preventDefault();
-      var code = scanInput.value.trim();
-      scanInput.value = '';
-      if(code.length < 4){ return; }
+    if(e.key !== 'Enter') return;
+    e.preventDefault();
+    var value = scanInput.value.trim();
+    if(!value) return;
+
+    if(looksLikeBarcode(value)){
       clearNameSearch();
-      handleScan(code);
+      handleScan(value);
+      return;
+    }
+    // Typed a name and pressed Enter — take the only match if there is exactly
+    // one, otherwise leave the list up for them to pick from.
+    var items = nameSearchResults.querySelectorAll('.search-result-item');
+    if(items.length === 1){
+      var ean = items[0].getAttribute('data-ean');
+      clearNameSearch();
+      handleScan(ean);
     }
   });
 
-  // ---------- Search-by-name (alternative to scanning) ----------
-  var nameSearchInput = document.getElementById('nameSearchInput');
-  var nameSearchResults = document.getElementById('nameSearchResults');
-
-  nameSearchInput.addEventListener('input', function(){
-    var q = nameSearchInput.value.trim().toLowerCase();
-    if(q.length < 2){
+  scanInput.addEventListener('input', function(){
+    var raw = scanInput.value.trim();
+    // Don't run a name search over a barcode that's still being typed/scanned.
+    if(looksLikeBarcode(raw) || raw.length < 2){
       nameSearchResults.innerHTML = '';
       return;
     }
+    var q = raw.toLowerCase();
     var matches = Object.keys(state.db)
       .map(function(ean){ return Object.assign({ean:ean}, state.db[ean]); })
       .filter(function(p){
@@ -770,16 +969,24 @@
       })
       .slice(0, 8);
 
-    if(!matches.length){
-      nameSearchResults.innerHTML = '<div class="search-no-results">No matching products in your database yet. If this is a new item, scan its barcode instead — or continue below and it will be added once confirmed.</div>';
-      return;
-    }
-    nameSearchResults.innerHTML = matches.map(function(p){
-      return '<div class="search-result-item" data-ean="' + escapeHtml(p.ean) + '">' +
-        '<span class="name">' + escapeHtml(p.name) + '</span>' +
-        '<span class="meta">SKU ' + escapeHtml(p.sku) + (p.brand ? ' · ' + escapeHtml(p.brand) : '') + '</span>' +
-        '</div>';
-    }).join('');
+    var html = matches.length
+      ? matches.map(function(p){
+          return '<div class="search-result-item" data-ean="' + escapeHtml(p.ean) + '">' +
+            '<span class="name">' + escapeHtml(p.name) +
+              (isNoBarcodeKey(p.ean) ? ' <span class="no-barcode-tag">no barcode</span>' : '') + '</span>' +
+            '<span class="meta">SKU ' + escapeHtml(p.sku) + (p.brand ? ' · ' + escapeHtml(p.brand) : '') + '</span>' +
+            '</div>';
+        }).join('')
+      : '<div class="search-no-results">No matching products in your database yet.</div>';
+
+    // Always offered, not just when there are no matches: a similar name may
+    // come up while the thing actually being received is a different product
+    // that has no barcode to scan.
+    html += '<button type="button" class="ghost add-no-barcode" id="addNoBarcodeBtn">' +
+      '＋ Add “' + escapeHtml(raw) + '” as a new product with no barcode</button>';
+
+    nameSearchResults.innerHTML = html;
+
     nameSearchResults.querySelectorAll('.search-result-item').forEach(function(item){
       item.addEventListener('click', function(){
         var ean = item.getAttribute('data-ean');
@@ -787,19 +994,52 @@
         handleScan(ean);
       });
     });
+    document.getElementById('addNoBarcodeBtn').addEventListener('click', function(){
+      var typedName = raw;
+      clearNameSearch();
+      handleScan(newNoBarcodeKey(), { noBarcode:true, presetName: typedName });
+    });
   });
 
   function clearNameSearch(){
-    nameSearchInput.value = '';
+    scanInput.value = '';
     nameSearchResults.innerHTML = '';
   }
 
-  function handleScan(ean){
+  // While an item is being confirmed the scan bar is hidden, so the barcode is
+  // shown on the product card instead — otherwise there'd be nowhere left to
+  // check what was actually scanned.
+  function showScanBar(show){
+    document.getElementById('scanCard').style.display = show ? 'block' : 'none';
+  }
+
+  function handleScan(ean, opts){
+    opts = opts || {};
     hideBanner('scanBanner');
+    showScanBar(false);
+    document.getElementById('scannedEanLine').innerHTML = isNoBarcodeKey(ean)
+      ? '<span class="no-barcode-tag">No barcode</span> — this item is found by name'
+      : 'Barcode <b>' + escapeHtml(ean) + '</b>';
     document.getElementById('productCard').style.display = 'block';
     document.getElementById('detailsCard').style.display = 'none';
     var lookupResult = document.getElementById('lookupResult');
-    lookupResult.innerHTML = '<span style="color:var(--crust-soft);">Looking up ' + escapeHtml(ean) + ' …</span>';
+    lookupResult.innerHTML = '<span style="color:var(--crust-soft);">Looking up ' + escapeHtml(barcodeForDisplay(ean)) + ' …</span>';
+
+    // Brand-new barcode-less product: nothing to look up anywhere, so go
+    // straight to the details form with the typed name filled in.
+    if(opts.noBarcode && !state.db[ean]){
+      state.pendingScan = { ean: ean, fromDb:false, noBarcode:true };
+      document.getElementById('productCardTitle').textContent = '2. New item — confirm the product';
+      document.getElementById('newProductNameField').style.display = 'block';
+      clearProductFields();
+      lookupResult.innerHTML =
+        '<div class="info"><b>New product with no barcode</b>' +
+        '<span>Enter its details once and it will be remembered — search for it by name next time.</span></div>';
+      document.getElementById('fProductName').value = opts.presetName || '';
+      document.getElementById('detailsCard').style.display = 'block';
+      document.getElementById('fSku').focus();
+      return;
+    }
 
     if(state.db[ean]){
       var p = state.db[ean];
@@ -885,9 +1125,22 @@
     document.getElementById('fPrice').value = '';
     document.getElementById('fBatch').value = '';
     document.getElementById('fBBE').value = '';
-    document.getElementById('fInvoice').value = '';
+    // Everything on one delivery note shares a supplier invoice number, so
+    // carry it across lines in the same app invoice instead of retyping it.
+    // Read back off the lines themselves rather than storing it separately,
+    // so this works with databases written by older versions.
+    document.getElementById('fInvoice').value = rememberedSupplierInvoice();
     updateConversionUI();
     updateQtyPreview();
+  }
+
+  function rememberedSupplierInvoice(){
+    var code = loadActiveInvoice().code;
+    var found = '';
+    state.lines.forEach(function(l){
+      if(l.invoiceCode === code && l.invoice) found = l.invoice;
+    });
+    return found;
   }
 
   function updateConversionUI(){
@@ -942,12 +1195,22 @@
     document.getElementById(id).addEventListener('input', updateQtyPreview);
   });
 
+  // Scrolling the page with the cursor over a number field would silently
+  // change the value — easy to do mid-form and easy to miss, and a wrong price
+  // or lot count goes straight into the accounts. Scroll the page instead.
+  document.addEventListener('wheel', function(e){
+    var el = e.target;
+    if(el && el.tagName === 'INPUT' && el.type === 'number' && el === document.activeElement){
+      el.blur();
+    }
+  }, { passive: true });
+
   document.getElementById('cancelLineBtn').addEventListener('click', function(){
     document.getElementById('productCard').style.display = 'none';
     document.getElementById('detailsCard').style.display = 'none';
     state.pendingScan = null;
     hideBanner('scanBanner');
-    scanInput.value = '';
+    showScanBar(true);
     clearNameSearch();
     scanInput.focus();
   });
@@ -1013,6 +1276,7 @@
     document.getElementById('productCard').style.display = 'none';
     document.getElementById('detailsCard').style.display = 'none';
     state.pendingScan = null;
+    showScanBar(true);
     clearNameSearch();
     showBanner('scanBanner','ok', '✓ Added ' + name + ' (' + trimNum(totalQtyInUnit) + ' ' + unit + ') to today\'s list. Ready for next scan.');
     scanInput.focus();
@@ -1185,52 +1449,137 @@
     setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
   }
 
-  document.getElementById('downloadCsvBtn').addEventListener('click', function(){
-    var lines = todaysLines();
+  // CSV building is shared by the download buttons and the end-of-day save,
+  // so a file written to disk is byte-for-byte what downloading would give.
+  function buildCraftybaseCsv(lines){
     var header = ['Purchase Date','Code','Notes','Vendor','Tax','Shipping','Discount','Grand Total','Paid','Item Unit Price','Item Quantity','Item Category','Material SKU','Material Name','Lot Number'];
     var rows = [header.join(',')];
-    var d = new Date();
-    var dateStr = String(d.getDate()).padStart(2,'0') + '/' + String(d.getMonth()+1).padStart(2,'0') + '/' + d.getFullYear();
     lines.forEach(function(l){
+      // Purchase date comes from the invoice's own date, so a back-dated
+      // invoice exports under the date on the paper delivery note rather than
+      // whenever it happened to be keyed in.
+      var dateStr = purchaseDateFromInvoiceCode(l.invoiceCode);
       var qtyGrams = (l.qtyGrams !== undefined) ? l.qtyGrams : l.qty;
       var pricePerGram = (l.pricePerGram !== undefined) ? l.pricePerGram : l.price;
       var grandTotal = (l.priceTotal !== undefined) ? l.priceTotal : (l.qty * l.price);
       var notes = l.name + (l.brand ? ' — Brand: ' + l.brand : '');
-      var row = [
+      rows.push([
         dateStr,
         l.invoiceCode,
         notes,
         l.supplier || 'Unknown supplier',
         '0','0','0',
         grandTotal.toFixed(2),
-        'false',
+        'true',
         pricePerGram.toFixed(6),
         trimNum(qtyGrams),
         'Materials',
         l.sku,
         l.name,
         l.batch
-      ].map(csvEscape);
-      rows.push(row.join(','));
+      ].map(csvEscape).join(','));
     });
-    downloadFile('craftybase-purchases-' + todayKey() + '.csv', rows.join('\n'));
-  });
+    return rows.join('\n');
+  }
 
-  document.getElementById('downloadArchiveBtn').addEventListener('click', function(){
-    var lines = todaysLines();
+  function buildArchiveCsv(lines, dayKey){
     var header = ['Invoice Code (Craftybase)','Supplier Invoice Number','Date','EAN-13','SKU','Product Name','Brand','Supplier','Lots','Size per lot','Unit','Total (unit)','Total (grams)','Price per lot (£)','Total price (£)','Price per gram (£)','Manufacturer Batch','Best Before'];
     var rows = [header.join(',')];
+    var dayLabel = dayKey ? isoFromDayKey(dayKey) : todayStr();
     lines.forEach(function(l){
       rows.push([
-        l.invoiceCode, l.invoice, todayStr(), l.ean, l.sku, l.name, l.brand||'', l.supplier,
+        l.invoiceCode, l.invoice, dayLabel, barcodeForExport(l.ean), l.sku, l.name, l.brand||'', l.supplier,
         l.lots||'', l.lotSize||'', l.unit, trimNum(l.qty), trimNum(l.qtyGrams!==undefined?l.qtyGrams:l.qty),
         Number(l.price).toFixed(2), (l.priceTotal!==undefined?l.priceTotal:l.price).toFixed(2),
         (l.pricePerGram!==undefined?l.pricePerGram.toFixed(6):''),
         l.batch, l.bbe
       ].map(csvEscape).join(','));
     });
-    downloadFile('receiving-archive-' + todayKey() + '.csv', rows.join('\n'));
+    return rows.join('\n');
+  }
+
+  document.getElementById('downloadCsvBtn').addEventListener('click', function(){
+    downloadFile('craftybase-purchases-' + todayKey() + '.csv', buildCraftybaseCsv(todaysLines()));
   });
+
+  document.getElementById('downloadArchiveBtn').addEventListener('click', function(){
+    downloadFile('receiving-archive-' + todayKey() + '.csv', buildArchiveCsv(todaysLines(), todayKey()));
+  });
+
+  // ---------- End-of-day exports ----------
+  // Both CSVs are written next to the app, filed by week:
+  //   Craftybase exports/week-commencing-YYYY-MM-DD/craftybase-purchases-YYYY-MM-DD.csv
+  //   Invoice list backups/week-commencing-YYYY-MM-DD/receiving-archive-YYYY-MM-DD.csv
+  var EXPORT_FOLDERS = {
+    craftybase: 'Craftybase exports',
+    archive: 'Invoice list backups'
+  };
+  var EXPORTED_DAYS_KEY = 'gi_exported_days_v1';
+
+  function dateFromDayKey(k){
+    // dayKey is DDMMYY (the app has always used a 2-digit year here).
+    var s = String(k);
+    return new Date(2000 + parseInt(s.slice(4,6),10), parseInt(s.slice(2,4),10) - 1, parseInt(s.slice(0,2),10));
+  }
+  function isoFromDayKey(k){
+    var d = dateFromDayKey(k);
+    return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+  }
+  function weekFolderForDayKey(k){
+    var d = dateFromDayKey(k);
+    // Back up to the Monday of that week, so a week's deliveries stay together
+    // even across a month boundary.
+    var offset = (d.getDay() + 6) % 7;
+    d.setDate(d.getDate() - offset);
+    return 'week-commencing-' + d.getFullYear() + '-' +
+      String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+  }
+
+  function linesForDay(dayKey){
+    return state.lines.filter(function(l){ return l.dayKey === dayKey; });
+  }
+
+  function saveDayExports(dayKey){
+    var lines = linesForDay(dayKey);
+    if(!lines.length) return Promise.resolve([]);
+    var week = weekFolderForDayKey(dayKey);
+    var iso = isoFromDayKey(dayKey);
+    return Promise.all([
+      invoke('save_export', { folder: EXPORT_FOLDERS.craftybase, week: week,
+        filename: 'craftybase-purchases-' + iso + '.csv', contents: buildCraftybaseCsv(lines) }),
+      invoke('save_export', { folder: EXPORT_FOLDERS.archive, week: week,
+        filename: 'receiving-archive-' + iso + '.csv', contents: buildArchiveCsv(lines, dayKey) })
+    ]).then(function(paths){
+      var done = loadJSON(EXPORTED_DAYS_KEY, []);
+      if(done.indexOf(dayKey) === -1){ done.push(dayKey); saveJSON(EXPORTED_DAYS_KEY, done); }
+      return paths;
+    });
+  }
+
+  // Runs on startup with no button to press: any earlier day that still has
+  // lines and was never exported gets written out now. Today is left alone —
+  // it isn't finished yet, so it gets picked up next time the app opens.
+  function exportUnfinishedDays(){
+    var done = loadJSON(EXPORTED_DAYS_KEY, []);
+    var today = todayKey();
+    var pending = [];
+    state.lines.forEach(function(l){
+      if(l.dayKey && l.dayKey !== today && done.indexOf(l.dayKey) === -1 && pending.indexOf(l.dayKey) === -1){
+        pending.push(l.dayKey);
+      }
+    });
+    if(!pending.length) return;
+    pending.reduce(function(chain, dayKey){
+      return chain.then(function(){ return saveDayExports(dayKey); });
+    }, Promise.resolve()).then(function(){
+      // Reported on the Receive tab, which is what's on screen at startup.
+      showBanner('scanBanner','ok','✓ Backed up ' + pending.length + ' previous day' +
+        (pending.length===1?'':'s') + ' of receiving to the Craftybase exports and Invoice list backups folders.');
+    }).catch(function(err){
+      showBanner('scanBanner','warn','Could not save the automatic backup of previous days. ' +
+        (err && err.message ? err.message : err));
+    });
+  }
 
   // ---------- Labels ----------
   function renderLabelPickList(){
@@ -1487,7 +1836,10 @@
     }
     wrap.innerHTML = '<table><thead><tr><th>EAN-13</th><th>Name</th><th>SKU</th><th>Brand</th><th>Unit</th><th>Grams/unit</th><th>Size/lot</th><th>Supplier</th><th></th></tr></thead><tbody>' +
       entries.map(function(e){
-        return '<tr><td>'+escapeHtml(e.ean)+'</td><td>'+escapeHtml(e.name)+'</td><td>'+escapeHtml(e.sku)+'</td><td>'+escapeHtml(e.brand||'')+'</td><td>'+escapeHtml(e.unit)+'</td><td>'+escapeHtml(e.gramsPerUnit!==undefined&&e.gramsPerUnit!==null?e.gramsPerUnit:'')+'</td><td>'+escapeHtml(e.lotSize!==undefined&&e.lotSize!==null?e.lotSize:'')+'</td><td>'+escapeHtml(e.supplier||'')+'</td>' +
+        var eanCell = isNoBarcodeKey(e.ean)
+          ? '<span class="no-barcode-tag">no barcode</span>'
+          : escapeHtml(e.ean);
+        return '<tr><td>'+eanCell+'</td><td>'+escapeHtml(e.name)+'</td><td>'+escapeHtml(e.sku)+'</td><td>'+escapeHtml(e.brand||'')+'</td><td>'+escapeHtml(e.unit)+'</td><td>'+escapeHtml(e.gramsPerUnit!==undefined&&e.gramsPerUnit!==null?e.gramsPerUnit:'')+'</td><td>'+escapeHtml(e.lotSize!==undefined&&e.lotSize!==null?e.lotSize:'')+'</td><td>'+escapeHtml(e.supplier||'')+'</td>' +
           '<td class="row-actions"><button data-print-product="'+escapeHtml(e.ean)+'">Print label</button><button data-edit-product="'+escapeHtml(e.ean)+'">Edit</button><button class="del" data-del-product="'+escapeHtml(e.ean)+'">Delete</button></td></tr>';
       }).join('') + '</tbody></table>';
 
@@ -1539,7 +1891,9 @@
     if(!p) return;
     editingEan = ean;
     document.getElementById('epError').style.display = 'none';
-    document.getElementById('epEan').value = ean;
+    // Barcode-less products show an empty box, so this doubles as "this item
+    // has a barcode now" without needing a separate flow.
+    document.getElementById('epEan').value = isNoBarcodeKey(ean) ? '' : ean;
     document.getElementById('epName').value = p.name || '';
     document.getElementById('epSku').value = p.sku || '';
     document.getElementById('epUnit').value = p.unit || 'kg';
@@ -1559,6 +1913,7 @@
   document.getElementById('epSave').addEventListener('click', function(){
     if(!editingEan) return;
 
+    var newEan = document.getElementById('epEan').value.trim();
     var name = document.getElementById('epName').value.trim();
     var sku = document.getElementById('epSku').value.trim();
     var unit = document.getElementById('epUnit').value;
@@ -1568,17 +1923,31 @@
     var lotSize = parseFloat(document.getElementById('epLotSize').value);
     var errEl = document.getElementById('epError');
 
-    if(!name || !sku){
-      errEl.textContent = 'Product name and SKU are required.';
+    function fail(msg){
+      errEl.textContent = msg;
       errEl.style.display = 'block';
-      return;
+    }
+
+    if(!name || !sku) return fail('Product name and SKU are required.');
+
+    // Blank barcode is allowed — the product keeps (or is given) an internal
+    // key and stays findable by name.
+    if(!newEan){
+      newEan = isNoBarcodeKey(editingEan) ? editingEan : newNoBarcodeKey();
+    }
+    // The database is keyed by barcode, so moving a product onto one that's
+    // already taken would overwrite that other product.
+    if(newEan !== editingEan && state.db[newEan]){
+      return fail('Barcode ' + newEan + ' is already used by "' + (state.db[newEan].name || 'another product') + '".');
     }
     errEl.style.display = 'none';
 
     var entry = { sku:sku, name:name, unit:unit, brand:brand, supplier:supplier };
     if(!isNaN(gramsPerUnit) && gramsPerUnit > 0) entry.gramsPerUnit = gramsPerUnit;
     if(!isNaN(lotSize) && lotSize > 0) entry.lotSize = lotSize;
-    state.db[editingEan] = entry;
+
+    if(newEan !== editingEan) delete state.db[editingEan];
+    state.db[newEan] = entry;
 
     saveDbToServer().then(function(){
       editProductModal.classList.remove('show');
@@ -1648,7 +2017,7 @@
     var rows = [header.join(',')];
     Object.keys(state.db).forEach(function(ean){
       var e = state.db[ean];
-      rows.push([ean, e.sku, e.name, e.brand||'', e.unit, (e.gramsPerUnit!==undefined?e.gramsPerUnit:''), (e.lotSize!==undefined?e.lotSize:''), e.supplier||''].map(csvEscape).join(','));
+      rows.push([barcodeForExport(ean), e.sku, e.name, e.brand||'', e.unit, (e.gramsPerUnit!==undefined?e.gramsPerUnit:''), (e.lotSize!==undefined?e.lotSize:''), e.supplier||''].map(csvEscape).join(','));
     });
     downloadFile('product-database.csv', rows.join('\n'));
   });
@@ -1678,6 +2047,8 @@
   loadDbFromServer().then(function(){
     hideBanner('scanBanner');
     if(document.getElementById('view-database').classList.contains('active')) renderDb();
+    // After the load banner is cleared, so the backup result isn't wiped by it.
+    exportUnfinishedDays();
   });
 
 })();
