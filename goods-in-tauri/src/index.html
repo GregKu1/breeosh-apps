@@ -6,20 +6,24 @@
 <title>Goods In</title>
 <script src="vendor/jsbarcode.all.min.js"></script>
 <style>
+  /* Deliberately high-contrast: this runs on a cheap screen in a bright
+     bakery, often read at arm's length. Every text colour here clears WCAG
+     AAA (7:1) against both the page and card backgrounds — the previous
+     mid-greys sat at 4.7–6.9:1 and read as washed out. */
   :root{
     --flour:#f5f5f4;
-    --crust:#2e2e2d;
-    --crust-soft:#5a5a58;
-    --rye:#737373;
-    --rye-dark:#4a4a49;
+    --crust:#12120f;        /* body text — 18.8:1 on white */
+    --crust-soft:#3b3b38;   /* labels, hints, meta — 11.2:1 */
+    --rye:#4d4d4a;          /* muted text — 8.5:1 */
+    --rye-dark:#17170f;     /* headings — 18.0:1 */
     --proof:#ffcc00;
-    --sesame:#e2e1de;
-    --line:#d4d3d0;
-    --ok:#3f7a4f;
-    --ok-bg:#e5f1e6;
-    --warn:#a8461f;
-    --warn-bg:#fbe9e0;
-    --wheat-shadow: 0 2px 0 rgba(46,46,45,0.08);
+    --sesame:#dedcd7;
+    --line:#b3b1ab;         /* borders: was near-invisible at 1.5:1 */
+    --ok:#2c6338;
+    --ok-bg:#dcecdf;
+    --warn:#8a3413;
+    --warn-bg:#f9e2d7;
+    --wheat-shadow: 0 2px 0 rgba(18,18,15,0.14);
     --radius: 10px;
   }
   *{box-sizing:border-box;}
@@ -115,23 +119,32 @@
     color:var(--crust); width:100%;
   }
   input:focus, select:focus{outline:none; border-color:var(--proof);}
+  /* The browser default placeholder grey is far lighter than anything else
+     here and undid the contrast work on the most-used field in the app. */
+  ::placeholder{ color:var(--rye); opacity:1; }
   label{display:block; font-size:0.82rem; color:var(--crust-soft); margin-bottom:5px; font-weight:600; letter-spacing:0.01em;}
   .field{margin-bottom:14px;}
   .grid2{display:grid; grid-template-columns:1fr 1fr; gap:14px;}
   .grid3{display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px;}
   @media (max-width:640px){ .grid2,.grid3{grid-template-columns:1fr;} }
 
+  /* Primary actions are near-black rather than mid-grey, so the main thing to
+     press on each screen is unmistakable. */
   button.big{
     font-family:inherit; font-size:1.05rem; font-weight:700; padding:14px 20px;
-    border-radius:8px; border:none; cursor:pointer; color:#fff; background:var(--rye);
-    box-shadow:0 2px 0 var(--rye-dark);
+    border-radius:8px; border:none; cursor:pointer; color:#fff; background:var(--crust);
+    box-shadow:0 2px 0 rgba(18,18,15,0.45);
   }
   button.big:active{ transform:translateY(1px); box-shadow:none; }
   button.ghost{
     background:transparent; color:var(--rye-dark); border:2px solid var(--rye);
     font-family:inherit; font-weight:700; padding:12px 18px; border-radius:8px; cursor:pointer;
   }
-  button.danger{ background:var(--warn); box-shadow:0 2px 0 #7a2e12; }
+  /* Stays outlined (still reads as the secondary action next to the Craftybase
+     CSV button) but the border/text is the exact same black as button.big's
+     background, rather than the lighter --rye used by ordinary ghost buttons. */
+  button.ghost.crust{ color:var(--crust); border-color:var(--crust); }
+  button.danger{ background:var(--warn); box-shadow:0 2px 0 #5e2210; }
   button:disabled{opacity:0.45; cursor:not-allowed; box-shadow:none;}
 
   .status-banner{
@@ -297,7 +310,9 @@
   .modal h3{margin-top:0; color:var(--rye-dark);}
 
   /* Two-option picker (e.g. invoice date: today vs. a chosen date). */
-  .choice-row{ display:flex; gap:10px; }
+  /* margin-bottom keeps the gap above the action buttons the same whether or
+     not the date field below is showing. */
+  .choice-row{ display:flex; gap:10px; margin-bottom:16px; }
   .choice{
     flex:1; font-family:inherit; font-size:0.95rem; font-weight:600;
     padding:12px 14px; border-radius:8px; cursor:pointer;
@@ -475,7 +490,7 @@
         <div id="exportChecklist"></div>
         <div class="toolbar" style="margin-top:16px;">
           <button class="big" id="downloadCsvBtn">⬇ Download Craftybase CSV</button>
-          <button class="ghost" id="downloadArchiveBtn">⬇ Download full receiving archive (with BBE)</button>
+          <button class="ghost crust" id="downloadArchiveBtn">⬇ Download full receiving archive (with BBE)</button>
         </div>
         <p style="font-size:0.82rem; color:var(--crust-soft); line-height:1.5; margin-top:14px;">
           Note: Craftybase's purchase importer does not have a field for expiry date — only lot number.
@@ -561,7 +576,7 @@
       <button type="button" class="choice selected" id="niModeToday">Today</button>
       <button type="button" class="choice" id="niModePick">Select date…</button>
     </div>
-    <div class="field" id="niDateField" style="display:none; margin-top:12px;">
+    <div class="field" id="niDateField" style="display:none;">
       <label>Invoice date</label>
       <input type="date" id="niDate">
     </div>
@@ -1581,6 +1596,67 @@
     });
   }
 
+  // ---------- Midnight rollover ----------
+  // Nothing above re-checks the date on its own — todayKey()/todayDateKey()
+  // only ever get asked "what day is it?" when something specific triggers
+  // them (a scan, opening a tab, app startup). If the app is just left open
+  // across midnight, the date labels, invoice badge, and today's-list views
+  // all keep showing whatever they last rendered. This watches for the day
+  // actually changing and catches the app up without needing a restart.
+  var lastSeenDayKey = todayKey();
+
+  function handleDayRollover(){
+    var current = todayKey();
+    if(current === lastSeenDayKey) return;
+    var finishedDay = lastSeenDayKey;
+    lastSeenDayKey = current;
+
+    // Date labels.
+    document.getElementById('todayLabel').textContent = todayStr();
+    document.getElementById('reviewDateLabel').textContent = todayStr();
+
+    // Invoice badge. loadActiveInvoice() sees the new date, finds no saved
+    // invoice still valid for it, and mints a fresh one — nextSeqForDate()
+    // finds no lines yet under the new day's code, so it naturally starts
+    // back at #1. This is the same rollover the app already does when
+    // restarted after midnight; here it just fires without a restart.
+    renderInvoiceBadge();
+
+    // Today-scoped views. Nothing is deleted — yesterday's lines stay put in
+    // state.lines under yesterday's dayKey, exactly as before, ready for the
+    // export below. These just need re-rendering so they show empty, since
+    // todaysLines() now filters against the new dayKey.
+    updateLineCount();
+    if(document.getElementById('view-review').classList.contains('active')) renderReview();
+    if(document.getElementById('view-export').classList.contains('active')){
+      renderExportChecklist();
+      renderLabelPickList();
+    }
+
+    // Write yesterday's CSVs to disk now, instead of waiting for the app to
+    // next be restarted to pick it up via exportUnfinishedDays().
+    saveDayExports(finishedDay).then(function(paths){
+      if(paths.length){
+        showBanner('scanBanner','ok','✓ Backed up yesterday\'s receiving to the Craftybase exports and Invoice list backups folders.');
+      }
+    }).catch(function(err){
+      showBanner('scanBanner','warn','Could not save the automatic backup of yesterday\'s receiving. ' +
+        (err && err.message ? err.message : err));
+    });
+  }
+
+  function startDayRolloverWatcher(){
+    // Checked every minute — cheap, and close enough to midnight that the
+    // rollover shows up within a minute of the date actually changing. Also
+    // re-checked whenever the window regains focus/visibility, in case the
+    // interval got throttled while the app sat in the background.
+    setInterval(handleDayRollover, 60 * 1000);
+    window.addEventListener('focus', handleDayRollover);
+    document.addEventListener('visibilitychange', function(){
+      if(!document.hidden) handleDayRollover();
+    });
+  }
+
   // ---------- Labels ----------
   function renderLabelPickList(){
     var lines = todaysLines();
@@ -2034,6 +2110,7 @@
   updateConversionUI();
   updateQtyPreview();
   applyLabelSize();
+  startDayRolloverWatcher();
 
   // Belt-and-braces: clear the label print buffer once the print dialog closes,
   // so nothing can ever linger visible on screen even if a browser quirk ignores
