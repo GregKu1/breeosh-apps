@@ -375,7 +375,7 @@
 
       <div class="card" id="scanCard">
         <h2>1. Scan the barcode, or search by name
-          <span class="hint">Aim the scanner at the EAN-13 on the package — it types automatically. No barcode handy? Just type the product name instead.</span>
+          <span class="hint">Aim the scanner at the barcode on the package — EAN-13, EAN-8, UPC, or a manufacturer's own internal barcode all work. No barcode handy? Just type the product name instead.</span>
         </h2>
         <div class="scan-row">
           <input type="text" id="scanInput" placeholder="Scan a barcode, or type a product name…" autofocus autocomplete="off">
@@ -402,7 +402,7 @@
             <label>Unit</label>
             <select id="fUnit">
               <option>kg</option><option>g</option><option>l</option><option>ml</option>
-              <option>each</option><option>box</option><option>bag</option>
+              <option value="items">item(s)</option>
             </select>
           </div>
           <div class="field">
@@ -416,7 +416,7 @@
             <input type="text" id="fSupplier" placeholder="">
           </div>
           <div class="field" id="conversionField">
-            <label>Grams per <span id="conversionUnitLabel">kg</span></label>
+            <label>Craftybase qty per <span id="conversionUnitLabel">kg</span></label>
             <input type="number" id="fConversion" min="0" step="any" placeholder="1000">
           </div>
         </div>
@@ -592,7 +592,7 @@
     <h3>Edit product</h3>
     <p id="epError" style="color:var(--warn); font-weight:600; display:none; margin-top:0;"></p>
     <div class="field">
-      <label>EAN-13 barcode</label>
+      <label>Barcode</label>
       <input type="text" id="epEan" autocomplete="off" placeholder="Leave blank if this item has no barcode">
       <span class="hint-inline">Changing this re-files the product under the new barcode. Leave it blank for items with no barcode — they're found by name instead. Items already received keep the barcode they were scanned with.</span>
     </div>
@@ -609,7 +609,7 @@
         <label>Unit</label>
         <select id="epUnit">
           <option>kg</option><option>g</option><option>l</option><option>ml</option>
-          <option>each</option><option>box</option><option>bag</option>
+          <option value="items">item(s)</option>
         </select>
       </div>
       <div class="field">
@@ -622,8 +622,8 @@
         <label>Supplier</label>
         <input type="text" id="epSupplier">
       </div>
-      <div class="field">
-        <label>Grams per <span id="epConversionUnitLabel">kg</span></label>
+      <div class="field" id="epConversionField">
+        <label>Craftybase qty per <span id="epConversionUnitLabel">kg</span></label>
         <input type="number" id="epConversion" min="0" step="any" placeholder="1000">
       </div>
       <div class="field">
@@ -737,7 +737,7 @@
   var state = {
     lines: loadJSON(LS_KEYS.lines, []),       // today's receiving lines
     db: loadJSON(DB_CACHE_KEY, {}),           // barcode -> {sku,name,unit,supplier,brand,gramsPerUnit} — refreshed from server on load
-    pendingScan: null                          // {ean, fromDb, offData}
+    pendingScan: null                          // {ean, fromDb}
   };
 
   // ---------- Date / Invoice numbering ----------
@@ -921,15 +921,25 @@
   var scanInput = document.getElementById('scanInput');
   var nameSearchResults = document.getElementById('nameSearchResults');
 
+  // A scan comes in as one unbroken run of characters with no spaces,
+  // followed by Enter — that's true whether it's a numeric EAN/UPC or an
+  // alphanumeric Code128/Code39-style manufacturer code. A typed product
+  // name search is the opposite case we need to keep working, and in
+  // practice people don't type digits when searching by name — so "no
+  // spaces, contains at least one digit, 4+ characters" tells scans and
+  // name searches apart without pinning barcodes to digits-only/13 digits.
   function looksLikeBarcode(v){
-    return /^[0-9]{4,}$/.test(v);
+    return v.length >= 4 && !/\s/.test(v) && /[0-9]/.test(v);
   }
 
-  // Not everything has an EAN — loose goods and a lot of trade ingredients
-  // arrive with no barcode at all. The product database is keyed by barcode,
-  // so those get an internal key instead. Real barcodes are digits only, so
-  // the "NB-" prefix can never collide with one, and any entry carrying it is
-  // displayed as having no barcode rather than showing the internal key.
+  // Not everything has a barcode — loose goods and a lot of trade
+  // ingredients arrive with none at all. The product database is keyed by
+  // barcode, so those get an internal key instead, tagged with this prefix
+  // so it's displayed as having no barcode rather than showing the internal
+  // key. Now that alphanumeric manufacturer barcodes are accepted (not just
+  // all-digit ones), a real barcode could in principle also start with
+  // "NB-" — see the guard in the scan handler below that catches this
+  // rather than silently misfiling such a barcode as "no barcode".
   var NO_BARCODE_PREFIX = 'NB-';
   function isNoBarcodeKey(k){
     return String(k || '').indexOf(NO_BARCODE_PREFIX) === 0;
@@ -953,6 +963,13 @@
     if(!value) return;
 
     if(looksLikeBarcode(value)){
+      // Extremely unlikely, but now that alphanumeric barcodes are accepted
+      // this is no longer impossible — refuse rather than silently filing a
+      // real barcode under the internal "no barcode" key.
+      if(isNoBarcodeKey(value)){
+        showBanner('scanBanner','warn','This barcode starts with "' + NO_BARCODE_PREFIX + '", which this app reserves for internal use. Please use the "no barcode" option for this item instead.');
+        return;
+      }
       clearNameSearch();
       handleScan(value);
       return;
@@ -1072,55 +1089,45 @@
       return;
     }
 
-    // Not in local DB — query OpenFoodFacts
+    // Not in the local DB — straight to manual entry, no external lookup.
     state.pendingScan = { ean: ean, fromDb:false };
     document.getElementById('productCardTitle').textContent = '2. New item — confirm the product';
     document.getElementById('newProductNameField').style.display = 'block';
     clearProductFields();
-
-    var url = 'https://world.openfoodfacts.org/api/v2/product/' + encodeURIComponent(ean) + '.json?fields=product_name,brands,quantity,image_front_small_url';
-    fetch(url, { headers: { 'User-Agent': 'BakeryGoodsIn/1.0 (internal tool)' } })
-      .then(function(r){ return r.json(); })
-      .then(function(data){
-        // If the person has already moved on to scanning a different item while
-        // this lookup was in flight, don't let it overwrite the newer screen.
-        if(!state.pendingScan || state.pendingScan.ean !== ean) return;
-        if(data && data.status === 1 && data.product){
-          var pr = data.product;
-          var name = pr.product_name || '';
-          var brand = pr.brands || '';
-          var qty = pr.quantity || '';
-          var img = pr.image_front_small_url || '';
-          lookupResult.innerHTML =
-            (img ? '<img src="'+escapeHtml(img)+'" alt="">' : '') +
-            '<div class="info"><b>' + escapeHtml(name || '(name not listed)') + '</b>' +
-            '<span>' + escapeHtml(brand) + (qty ? ' · ' + escapeHtml(qty) : '') + '</span>' +
-            '<span style="display:block;margin-top:4px;">Found on Open Food Facts — not yet in your own database.</span></div>';
-          document.getElementById('fProductName').value = name || '';
-          document.getElementById('fBrand').value = brand || '';
-          showBanner('scanBanner','ok','Found on Open Food Facts. Check the name and fill in SKU/unit/brand/supplier once — future scans will be instant.');
-        } else {
-          lookupResult.innerHTML = '<div class="info"><b>New product — nothing to worry about</b><span>This barcode isn\'t in Open Food Facts or your own database yet. That\'s normal for bakery/trade ingredients. Enter details below just this once — it will be remembered from now on.</span></div>';
-          showBanner('scanBanner','ok','New item — please enter the product details below. This is expected for most raw ingredients.');
-        }
-      })
-      .catch(function(){
-        if(!state.pendingScan || state.pendingScan.ean !== ean) return;
-        lookupResult.innerHTML = '<div class="info"><b>Lookup failed</b><span>Could not reach Open Food Facts (check internet connection). Enter details manually below.</span></div>';
-        showBanner('scanBanner','warn','No internet connection to the lookup service. You can still enter this item manually.');
-      });
+    lookupResult.innerHTML = '<div class="info"><b>New product — nothing to worry about</b><span>This barcode isn\'t in your product database yet. That\'s normal for bakery/trade ingredients. Enter details below just this once — it will be remembered from now on.</span></div>';
+    showBanner('scanBanner','ok','New item — please enter the product details below. This is expected for most raw ingredients.');
 
     document.getElementById('detailsCard').style.display = 'block';
   }
 
-  // Default grams-per-unit for units with a fixed, unambiguous conversion.
-  // Volume and countable units are left for the user to define once per product.
-  var FIXED_CONVERSIONS = { kg: 1000, g: 1 };
+  // Default Craftybase-quantity-per-unit for units with a fixed, unambiguous
+  // conversion. "items" is 1:1 by definition — an item count needs no
+  // conversion. Volume and weight units without a fixed conversion (l, ml)
+  // are left for the user to define once per product.
+  var FIXED_CONVERSIONS = { kg: 1000, g: 1, items: 1 };
+  var STANDARD_UNITS = ['kg','g','l','ml','items'];
+
+  // Products saved under a unit that's since been retired (e.g. the old
+  // "each" / "box" / "bag") would otherwise silently fall back to whatever
+  // the dropdown's first option is and lose their real unit the moment the
+  // line is added or saved without anyone noticing. Keep it selectable.
+  function ensureUnitOption(selectEl, unit){
+    Array.prototype.slice.call(selectEl.querySelectorAll('option[data-legacy-unit]')).forEach(function(o){ o.remove(); });
+    if(unit && STANDARD_UNITS.indexOf(unit) === -1){
+      var opt = document.createElement('option');
+      opt.value = unit;
+      opt.textContent = unit + ' (old unit — please update)';
+      opt.setAttribute('data-legacy-unit', '1');
+      selectEl.appendChild(opt);
+    }
+  }
 
   function fillProductFields(p){
     document.getElementById('fProductName').value = p.name || '';
     document.getElementById('fSku').value = p.sku || '';
-    document.getElementById('fUnit').value = p.unit || 'kg';
+    var fUnit = document.getElementById('fUnit');
+    ensureUnitOption(fUnit, p.unit);
+    fUnit.value = p.unit || 'kg';
     document.getElementById('fBrand').value = p.brand || '';
     document.getElementById('fSupplier').value = p.supplier || '';
     document.getElementById('fConversion').value = (p.gramsPerUnit !== undefined && p.gramsPerUnit !== null) ? p.gramsPerUnit : '';
@@ -1131,6 +1138,7 @@
   function clearProductFields(){
     document.getElementById('fProductName').value = '';
     document.getElementById('fSku').value = '';
+    ensureUnitOption(document.getElementById('fUnit'), null); // drop any leftover legacy-unit option
     document.getElementById('fUnit').value = 'kg';
     document.getElementById('fBrand').value = '';
     document.getElementById('fSupplier').value = '';
@@ -1163,12 +1171,22 @@
     document.getElementById('conversionUnitLabel').textContent = unit;
     document.getElementById('lotUnitLabel').textContent = unit;
     var convInput = document.getElementById('fConversion');
-    if(FIXED_CONVERSIONS.hasOwnProperty(unit)){
-      convInput.value = FIXED_CONVERSIONS[unit];
-      convInput.disabled = true;
+    var convField = document.getElementById('conversionField');
+    if(unit === 'items'){
+      // Item counts have no meaningful "qty per item" to enter — it's always
+      // 1:1 with whatever Craftybase counts it as, so hide the field rather
+      // than show a confusing fixed "1".
+      convInput.value = FIXED_CONVERSIONS.items;
+      convField.style.display = 'none';
     } else {
-      convInput.disabled = false;
-      if(!convInput.value) convInput.placeholder = 'e.g. 1000 (grams per ' + unit + ')';
+      convField.style.display = '';
+      if(FIXED_CONVERSIONS.hasOwnProperty(unit)){
+        convInput.value = FIXED_CONVERSIONS[unit];
+        convInput.disabled = true;
+      } else {
+        convInput.disabled = false;
+        if(!convInput.value) convInput.placeholder = 'e.g. 1000 (grams per ' + unit + ')';
+      }
     }
   }
   document.getElementById('fUnit').addEventListener('change', function(){
@@ -1184,11 +1202,14 @@
     var gramsPerUnit = parseFloat(document.getElementById('fConversion').value);
     var preview = document.getElementById('qtyPreview');
 
+    var isItems = (unit === 'items');
     var parts = [];
     if(lots > 0 && lotSize > 0){
       var totalUnits = lots * lotSize;
       parts.push(lots + ' × ' + lotSize + ' ' + unit + ' = <b>' + trimNum(totalUnits) + ' ' + unit + ' total</b>');
-      if(gramsPerUnit > 0){
+      // For items, gramsPerUnit is always 1, so this is just the item count
+      // restated — skip it, the line above already says it plainly.
+      if(gramsPerUnit > 0 && !isItems){
         var totalGrams = totalUnits * gramsPerUnit;
         parts.push(trimNum(totalGrams) + ' g total (for Craftybase)');
       }
@@ -1198,7 +1219,7 @@
       parts.push('£' + totalPrice.toFixed(2) + ' total (' + lots + ' × £' + price.toFixed(2) + ')');
       if(gramsPerUnit > 0 && lotSize > 0){
         var pricePerGram = price / (lotSize * gramsPerUnit);
-        parts.push('£' + pricePerGram.toFixed(5) + ' per gram (for Craftybase)');
+        parts.push('£' + pricePerGram.toFixed(isItems ? 2 : 5) + ' per ' + (isItems ? 'item' : 'gram') + ' (for Craftybase)');
       }
     }
     preview.innerHTML = parts.length ? parts.join(' &nbsp;·&nbsp; ') : 'Enter lots and size to see the total.';
@@ -1477,7 +1498,11 @@
       var qtyGrams = (l.qtyGrams !== undefined) ? l.qtyGrams : l.qty;
       var pricePerGram = (l.pricePerGram !== undefined) ? l.pricePerGram : l.price;
       var grandTotal = (l.priceTotal !== undefined) ? l.priceTotal : (l.qty * l.price);
-      var notes = l.name + (l.brand ? ' — Brand: ' + l.brand : '');
+      // "Code" above is this app's own DDMMYYYY-NNN reference, not the
+      // supplier's invoice number — that's only entered separately per line,
+      // so it isn't captured anywhere else in this file. Fold it into the
+      // notes when present so it isn't lost on the way into Craftybase.
+      var notes = l.name + (l.brand ? ' — Brand: ' + l.brand : '') + (l.invoice ? ' — Supplier invoice: ' + l.invoice : '');
       rows.push([
         dateStr,
         l.invoiceCode,
@@ -1498,7 +1523,10 @@
   }
 
   function buildArchiveCsv(lines, dayKey){
-    var header = ['Invoice Code (Craftybase)','Supplier Invoice Number','Date','EAN-13','SKU','Product Name','Brand','Supplier','Lots','Size per lot','Unit','Total (unit)','Total (grams)','Price per lot (£)','Total price (£)','Price per gram (£)','Manufacturer Batch','Best Before'];
+    // "Total (Craftybase qty)" / "Price per Craftybase unit" hold grams for
+    // weight-tracked products but plain item counts for item(s)-unit ones —
+    // whichever this line's product is actually configured as in Craftybase.
+    var header = ['Invoice Code (Craftybase)','Supplier Invoice Number','Date','Barcode','SKU','Product Name','Brand','Supplier','Lots','Size per lot','Unit','Total (unit)','Total (Craftybase qty)','Price per lot (£)','Total price (£)','Price per Craftybase unit (£)','Manufacturer Batch','Best Before'];
     var rows = [header.join(',')];
     var dayLabel = dayKey ? isoFromDayKey(dayKey) : todayStr();
     lines.forEach(function(l){
@@ -1910,7 +1938,7 @@
       wrap.innerHTML = '<div class="empty"><div class="big-icon">📦</div>No products remembered yet — they\'ll appear here after you scan and confirm new items.</div>';
       return;
     }
-    wrap.innerHTML = '<table><thead><tr><th>EAN-13</th><th>Name</th><th>SKU</th><th>Brand</th><th>Unit</th><th>Grams/unit</th><th>Size/lot</th><th>Supplier</th><th></th></tr></thead><tbody>' +
+    wrap.innerHTML = '<table><thead><tr><th>Barcode</th><th>Name</th><th>SKU</th><th>Brand</th><th>Unit</th><th>Craftybase qty/unit</th><th>Size/lot</th><th>Supplier</th><th></th></tr></thead><tbody>' +
       entries.map(function(e){
         var eanCell = isNoBarcodeKey(e.ean)
           ? '<span class="no-barcode-tag">no barcode</span>'
@@ -1959,6 +1987,18 @@
     var unit = document.getElementById('epUnit').value;
     document.getElementById('epConversionUnitLabel').textContent = unit;
     document.getElementById('epLotUnitLabel').textContent = unit;
+    var convInput = document.getElementById('epConversion');
+    var convField = document.getElementById('epConversionField');
+    if(unit === 'items'){
+      // Item counts have no meaningful "grams per item" — it's always 1:1
+      // with whatever Craftybase counts it as, so there's nothing to enter.
+      convInput.value = 1;
+      convInput.disabled = true;
+      convField.style.display = 'none';
+    } else {
+      convInput.disabled = false;
+      convField.style.display = '';
+    }
   }
   document.getElementById('epUnit').addEventListener('change', updateEditUnitLabels);
 
@@ -1972,7 +2012,9 @@
     document.getElementById('epEan').value = isNoBarcodeKey(ean) ? '' : ean;
     document.getElementById('epName').value = p.name || '';
     document.getElementById('epSku').value = p.sku || '';
-    document.getElementById('epUnit').value = p.unit || 'kg';
+    var epUnit = document.getElementById('epUnit');
+    ensureUnitOption(epUnit, p.unit);
+    epUnit.value = p.unit || 'kg';
     document.getElementById('epBrand').value = p.brand || '';
     document.getElementById('epSupplier').value = p.supplier || '';
     document.getElementById('epConversion').value = (p.gramsPerUnit !== undefined && p.gramsPerUnit !== null) ? p.gramsPerUnit : '';
@@ -2010,6 +2052,8 @@
     // key and stays findable by name.
     if(!newEan){
       newEan = isNoBarcodeKey(editingEan) ? editingEan : newNoBarcodeKey();
+    } else if(isNoBarcodeKey(newEan)){
+      return fail('Barcode can\'t start with "' + NO_BARCODE_PREFIX + '" — that prefix is reserved internally for items with no barcode. Leave the field blank instead if this item has none.');
     }
     // The database is keyed by barcode, so moving a product onto one that's
     // already taken would overwrite that other product.
@@ -2089,7 +2133,7 @@
   });
 
   document.getElementById('exportDbBtn').addEventListener('click', function(){
-    var header = ['EAN-13','SKU','Name','Brand','Unit','Grams per unit','Size per lot','Supplier'];
+    var header = ['Barcode','SKU','Name','Brand','Unit','Craftybase qty per unit','Size per lot','Supplier'];
     var rows = [header.join(',')];
     Object.keys(state.db).forEach(function(ean){
       var e = state.db[ean];
