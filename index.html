@@ -398,7 +398,7 @@
       sessionEmpty.style.display = 'none';
       sessionInfo.style.display = 'block';
       sessionRecipe.textContent = state.recipe.name;
-      sessionMeta.textContent = state.recipe.date + ' · ' + state.recipe.time;
+      sessionMeta.textContent = state.recipe.date;
     } else {
       sessionEmpty.style.display = 'block';
       sessionInfo.style.display = 'none';
@@ -457,8 +457,8 @@
     finishBtn.disabled = !(state.recipe && state.rows.length > 0);
   }
 
-  function startSession(name, date, time){
-    state.recipe = { name: name, date: date, time: time };
+  function startSession(name, date){
+    state.recipe = { name: name, date: date };
     state.rows = [];
     save();
     render();
@@ -472,15 +472,18 @@
     clearBanner();
   }
 
+  // Recipe/command barcodes carry a reserved prefix rather than being told apart
+  // by pipe count — RECIPE_NAME|DATE alone would otherwise be indistinguishable
+  // from an ingredient's SKU|BATCH (both have exactly one pipe).
+  var RECIPE_PREFIX = 'RCP|';
+
   function handleScan(raw){
     var value = raw.trim();
     if(!value) return;
 
-    var parts = value.split('|');
-    var pipeCount = parts.length - 1;
-
-    if(pipeCount === 2){
-      var name = parts[0].trim(), date = parts[1].trim(), time = parts[2].trim();
+    if(value.indexOf(RECIPE_PREFIX) === 0){
+      var rest = value.slice(RECIPE_PREFIX.length).split('|');
+      var name = (rest[0] || '').trim(), date = (rest[1] || '').trim();
       if(!name){
         showBanner('err', 'That recipe barcode is missing a name.');
         return;
@@ -493,11 +496,12 @@
         );
         if(!ok){ showBanner('warn', 'Kept your current list. Finish & email it first.'); return; }
       }
-      startSession(name, date, time);
+      startSession(name, date);
       return;
     }
 
-    if(pipeCount === 1){
+    var parts = value.split('|');
+    if(parts.length === 2){
       var sku = parts[0].trim(), batch = parts[1].trim();
       if(!sku || !batch){
         showBanner('err', 'That ingredient barcode is missing a SKU or batch.');
@@ -511,7 +515,7 @@
       return;
     }
 
-    showBanner('err', 'Unrecognised barcode: "' + value + '". Expected SKU|BATCH or RECIPE|DATE|TIME.');
+    showBanner('err', 'Unrecognised barcode: "' + value + '". Expected SKU|BATCH or ' + RECIPE_PREFIX + 'RECIPE|DATE.');
   }
 
   function submitScan(){
@@ -589,11 +593,10 @@
       return;
     }
 
-    var subject = 'Lot log: ' + state.recipe.name + ' - ' + state.recipe.date + ' ' + state.recipe.time;
+    var subject = 'Lot log: ' + state.recipe.name + ' - ' + state.recipe.date;
     var lines = [];
     lines.push('Recipe: ' + state.recipe.name);
     lines.push('Date: ' + state.recipe.date);
-    lines.push('Time: ' + state.recipe.time);
     lines.push('Staff: ' + staffName.value.trim());
     lines.push('');
     lines.push('Ingredients (' + state.rows.length + '):');
