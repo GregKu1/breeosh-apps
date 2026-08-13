@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Lot Number Tracker</title>
+<style>
+  :root{
+    --bg:#f4f5f7; --card:#ffffff; --ink:#1a1c20; --muted:#6b7280;
+    --accent:#2563eb; --accent-ink:#ffffff; --danger:#dc2626; --ok:#16a34a;
+    --border:#e5e7eb;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    padding:14px; padding-bottom:100px;
+    font-size:17px;
+  }
+  h1{font-size:20px; margin:0 0 4px;}
+  .sub{color:var(--muted); font-size:14px; margin:0 0 16px;}
+
+  .card{
+    background:var(--card); border:1px solid var(--border); border-radius:14px;
+    padding:16px; margin-bottom:14px;
+  }
+
+  label{display:block; font-size:13px; color:var(--muted); margin-bottom:6px; font-weight:600;}
+
+  input[type=text], input[type=email]{
+    width:100%; font-size:20px; padding:14px 12px; border-radius:10px;
+    border:2px solid var(--border); background:#fff; color:var(--ink);
+    -webkit-appearance:none;
+  }
+  input[type=text]:focus, input[type=email]:focus{outline:none; border-color:var(--accent);}
+
+  .scan-row{display:flex; gap:8px;}
+  .scan-row input{flex:1;}
+  button{
+    font-size:16px; font-weight:600; padding:14px 18px; border-radius:10px;
+    border:none; cursor:pointer; -webkit-appearance:none;
+  }
+  .btn-primary{background:var(--accent); color:var(--accent-ink);}
+  .btn-primary:disabled{background:#93b4f0; cursor:not-allowed;}
+  .btn-danger{background:var(--danger); color:#fff;}
+  .btn-ghost{background:#eef0f3; color:var(--ink);}
+  .btn-block{width:100%;}
+
+  .session-empty{color:var(--muted); font-size:15px; text-align:center; padding:10px 0;}
+  .session-title{font-size:19px; font-weight:700; margin:0 0 2px;}
+  .session-meta{color:var(--muted); font-size:14px; margin:0;}
+
+  .banner{
+    padding:12px 14px; border-radius:10px; margin-bottom:14px; font-size:15px;
+    display:none;
+  }
+  .banner.show{display:block;}
+  .banner.ok{background:#dcfce7; color:#166534;}
+  .banner.warn{background:#fef3c7; color:#92400e;}
+  .banner.err{background:#fee2e2; color:#991b1b;}
+
+  .rows{list-style:none; margin:0; padding:0;}
+  .rows li{
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    padding:12px 4px; border-bottom:1px solid var(--border);
+  }
+  .rows li:last-child{border-bottom:none;}
+  .row-main{min-width:0;}
+  .row-sku{font-weight:700; font-size:16px; word-break:break-all;}
+  .row-batch{color:var(--muted); font-size:14px; word-break:break-all;}
+  .row-time{color:var(--muted); font-size:12px;}
+  .row-x{
+    flex:none; width:38px; height:38px; border-radius:50%;
+    background:#fee2e2; color:var(--danger); font-size:18px; font-weight:700;
+    display:flex; align-items:center; justify-content:center; padding:0; border:none;
+  }
+
+  .count-pill{
+    display:inline-block; background:#eef2ff; color:var(--accent);
+    font-size:13px; font-weight:700; padding:3px 10px; border-radius:999px;
+  }
+
+  .footer-actions{
+    position:fixed; left:0; right:0; bottom:0; background:var(--bg);
+    border-top:1px solid var(--border); padding:10px 14px 16px;
+    display:flex; gap:10px;
+  }
+  .footer-actions button{flex:1;}
+
+  details.help{font-size:14px; color:var(--muted);}
+  details.help summary{cursor:pointer; font-weight:600; color:var(--ink);}
+  details.help code{background:#eef0f3; padding:1px 5px; border-radius:5px;}
+
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#111317; --card:#1c1f26; --ink:#f2f3f5; --muted:#9aa1ac;
+      --border:#2c313a;
+    }
+    input[type=text], input[type=email]{background:#14161b; color:var(--ink); border-color:#333944;}
+    .btn-ghost{background:#262a32; color:var(--ink);}
+    .row-x{background:#3a1f22;}
+    .count-pill{background:#1c2440;}
+    .banner.ok{background:#123322; color:#86efac;}
+    .banner.warn{background:#3a2f10; color:#fde68a;}
+    .banner.err{background:#3a1418; color:#fca5a5;}
+  }
+</style>
+</head>
+<body>
+
+  <h1>Lot Number Tracker</h1>
+  <p class="sub">Prototype — scan (or type) the recipe barcode to start, then each ingredient barcode as you add it.</p>
+
+  <div id="banner" class="banner"></div>
+
+  <div class="card">
+    <div id="sessionEmpty" class="session-empty">No recipe started yet. Scan the recipe sheet's barcode to begin.</div>
+    <div id="sessionInfo" style="display:none;">
+      <p class="session-title" id="sessionRecipe"></p>
+      <p class="session-meta" id="sessionMeta"></p>
+    </div>
+  </div>
+
+  <div class="card">
+    <label for="scanInput">Scan or type a barcode, then press Enter / Add</label>
+    <div class="scan-row">
+      <input type="text" id="scanInput" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="e.g. 332|B4471 or CARROT_CAKE|2026-08-13|09:15">
+      <button class="btn-primary" id="addBtn">Add</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+      <label style="margin:0;">Scanned ingredients</label>
+      <span class="count-pill" id="rowCount">0</span>
+    </div>
+    <ul class="rows" id="rowsList"></ul>
+    <p id="rowsEmpty" class="session-empty" style="margin:6px 0 0;">Nothing scanned yet.</p>
+  </div>
+
+  <div class="card">
+    <label for="emailTo">Send finished log to (remembered on this phone)</label>
+    <input type="email" id="emailTo" autocomplete="email" placeholder="you@example.com">
+  </div>
+
+  <details class="help card">
+    <summary>How this works</summary>
+    <p>Two barcode formats are recognised, told apart by how many <code>|</code> characters they contain:</p>
+    <ul>
+      <li><b>1 pipe</b> — <code>SKU|BATCH</code> — an ingredient label. Adds a row to the list.</li>
+      <li><b>2 pipes</b> — <code>RECIPE_NAME|DATE|TIME</code> — a recipe-sheet header. Starts a new session.</li>
+    </ul>
+    <p>Starting a new session while one is already in progress will ask you to confirm first, so an accidental re-scan can't wipe your list.</p>
+  </details>
+
+  <div class="footer-actions">
+    <button class="btn-ghost" id="resetBtn">Reset</button>
+    <button class="btn-primary" id="finishBtn" disabled>Finish &amp; Email</button>
+  </div>
+
+<script>
+(function(){
+  "use strict";
+
+  var STORAGE_KEY = "lotTrackerSession_v1";
+  var EMAIL_KEY = "lotTrackerEmail_v1";
+
+  var state = {
+    recipe: null,   // { name, date, time }
+    rows: []        // [{ sku, batch, time }]
+  };
+
+  var scanInput = document.getElementById('scanInput');
+  var addBtn = document.getElementById('addBtn');
+  var sessionEmpty = document.getElementById('sessionEmpty');
+  var sessionInfo = document.getElementById('sessionInfo');
+  var sessionRecipe = document.getElementById('sessionRecipe');
+  var sessionMeta = document.getElementById('sessionMeta');
+  var rowsList = document.getElementById('rowsList');
+  var rowsEmpty = document.getElementById('rowsEmpty');
+  var rowCount = document.getElementById('rowCount');
+  var finishBtn = document.getElementById('finishBtn');
+  var resetBtn = document.getElementById('resetBtn');
+  var bannerEl = document.getElementById('banner');
+  var emailTo = document.getElementById('emailTo');
+
+  function showBanner(kind, msg){
+    bannerEl.className = 'banner show ' + kind;
+    bannerEl.textContent = msg;
+  }
+  function clearBanner(){
+    bannerEl.className = 'banner';
+    bannerEl.textContent = '';
+  }
+
+  function save(){
+    try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
+  }
+  function load(){
+    try{
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if(raw){
+        var parsed = JSON.parse(raw);
+        if(parsed && typeof parsed === 'object'){
+          state.recipe = parsed.recipe || null;
+          state.rows = Array.isArray(parsed.rows) ? parsed.rows : [];
+        }
+      }
+      var savedEmail = localStorage.getItem(EMAIL_KEY);
+      if(savedEmail) emailTo.value = savedEmail;
+    }catch(e){}
+  }
+
+  function nowTimeStr(){
+    var d = new Date();
+    function pad(n){ return n < 10 ? '0' + n : '' + n; }
+    return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+
+  function render(){
+    if(state.recipe){
+      sessionEmpty.style.display = 'none';
+      sessionInfo.style.display = 'block';
+      sessionRecipe.textContent = state.recipe.name;
+      sessionMeta.textContent = state.recipe.date + ' · ' + state.recipe.time;
+    } else {
+      sessionEmpty.style.display = 'block';
+      sessionInfo.style.display = 'none';
+    }
+
+    rowsList.innerHTML = '';
+    if(state.rows.length === 0){
+      rowsEmpty.style.display = 'block';
+    } else {
+      rowsEmpty.style.display = 'none';
+      state.rows.forEach(function(r, idx){
+        var li = document.createElement('li');
+
+        var main = document.createElement('div');
+        main.className = 'row-main';
+        var sku = document.createElement('div');
+        sku.className = 'row-sku';
+        sku.textContent = r.sku;
+        var batch = document.createElement('div');
+        batch.className = 'row-batch';
+        batch.textContent = 'Batch: ' + r.batch;
+        var time = document.createElement('div');
+        time.className = 'row-time';
+        time.textContent = 'Scanned ' + r.time;
+        main.appendChild(sku);
+        main.appendChild(batch);
+        main.appendChild(time);
+
+        var x = document.createElement('button');
+        x.className = 'row-x';
+        x.textContent = '✕';
+        x.setAttribute('aria-label', 'Remove');
+        x.addEventListener('click', function(){
+          state.rows.splice(idx, 1);
+          save();
+          render();
+        });
+
+        li.appendChild(main);
+        li.appendChild(x);
+        rowsList.appendChild(li);
+      });
+    }
+
+    rowCount.textContent = state.rows.length;
+    finishBtn.disabled = !(state.recipe && state.rows.length > 0);
+  }
+
+  function startSession(name, date, time){
+    state.recipe = { name: name, date: date, time: time };
+    state.rows = [];
+    save();
+    render();
+    showBanner('ok', 'Started: ' + name);
+  }
+
+  function addRow(sku, batch){
+    state.rows.push({ sku: sku, batch: batch, time: nowTimeStr() });
+    save();
+    render();
+    clearBanner();
+  }
+
+  function handleScan(raw){
+    var value = raw.trim();
+    if(!value) return;
+
+    var parts = value.split('|');
+    var pipeCount = parts.length - 1;
+
+    if(pipeCount === 2){
+      var name = parts[0].trim(), date = parts[1].trim(), time = parts[2].trim();
+      if(!name){
+        showBanner('err', 'That recipe barcode is missing a name.');
+        return;
+      }
+      if(state.rows.length > 0){
+        var ok = window.confirm(
+          'You have ' + state.rows.length + ' ingredient(s) scanned for "' +
+          (state.recipe ? state.recipe.name : 'the current recipe') +
+          '" that haven\'t been emailed yet.\n\nStart "' + name + '" anyway and lose that unsent list?'
+        );
+        if(!ok){ showBanner('warn', 'Kept your current list. Finish & email it first.'); return; }
+      }
+      startSession(name, date, time);
+      return;
+    }
+
+    if(pipeCount === 1){
+      var sku = parts[0].trim(), batch = parts[1].trim();
+      if(!sku || !batch){
+        showBanner('err', 'That ingredient barcode is missing a SKU or batch.');
+        return;
+      }
+      if(!state.recipe){
+        showBanner('err', 'Scan the recipe sheet\'s barcode first, before scanning ingredients.');
+        return;
+      }
+      addRow(sku, batch);
+      return;
+    }
+
+    showBanner('err', 'Unrecognised barcode: "' + value + '". Expected SKU|BATCH or RECIPE|DATE|TIME.');
+  }
+
+  function submitScan(){
+    var v = scanInput.value;
+    scanInput.value = '';
+    handleScan(v);
+    scanInput.focus();
+  }
+
+  addBtn.addEventListener('click', submitScan);
+  scanInput.addEventListener('keydown', function(e){
+    if(e.key === 'Enter'){
+      e.preventDefault();
+      submitScan();
+    }
+  });
+
+  emailTo.addEventListener('change', function(){
+    try{ localStorage.setItem(EMAIL_KEY, emailTo.value.trim()); }catch(e){}
+  });
+
+  resetBtn.addEventListener('click', function(){
+    if(state.rows.length > 0 || state.recipe){
+      var ok = window.confirm('Clear the current recipe and all scanned rows? This cannot be undone.');
+      if(!ok) return;
+    }
+    state.recipe = null;
+    state.rows = [];
+    save();
+    render();
+    clearBanner();
+    scanInput.focus();
+  });
+
+  finishBtn.addEventListener('click', function(){
+    if(!state.recipe || state.rows.length === 0) return;
+
+    var subject = 'Lot log: ' + state.recipe.name + ' - ' + state.recipe.date + ' ' + state.recipe.time;
+    var lines = [];
+    lines.push('Recipe: ' + state.recipe.name);
+    lines.push('Date: ' + state.recipe.date);
+    lines.push('Time: ' + state.recipe.time);
+    lines.push('');
+    lines.push('Ingredients (' + state.rows.length + '):');
+    state.rows.forEach(function(r){
+      lines.push('- ' + r.sku + '  batch: ' + r.batch + '  (scanned ' + r.time + ')');
+    });
+    lines.push('');
+    lines.push('Sent from Lot Number Tracker prototype.');
+    var body = lines.join('\n');
+
+    var to = emailTo.value.trim();
+    var mailto = 'mailto:' + encodeURIComponent(to) +
+      '?subject=' + encodeURIComponent(subject) +
+      '&body=' + encodeURIComponent(body);
+
+    window.location.href = mailto;
+  });
+
+  // Keep the scan input focused whenever possible, so a hardware
+  // scanner (acting as a keyboard) can fire-and-forget without tapping.
+  document.addEventListener('click', function(e){
+    if(e.target === scanInput || e.target.tagName === 'BUTTON' || e.target === emailTo) return;
+    scanInput.focus();
+  });
+  window.addEventListener('load', function(){ scanInput.focus(); });
+
+  load();
+  render();
+})();
+</script>
+</body>
+</html>
