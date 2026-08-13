@@ -146,7 +146,7 @@
   <div class="card">
     <label for="scanInput">Scan or type a barcode, then press Enter / Add</label>
     <div class="scan-row">
-      <input type="text" id="scanInput" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="e.g. 332|B4471 or CARROT_CAKE|2026-08-13|09:15">
+      <input type="text" id="scanInput" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
       <button class="btn-primary" id="addBtn">Add</button>
     </div>
   </div>
@@ -546,7 +546,7 @@
 
   function openEmailModal(){
     emailModal.classList.add('show');
-    emailTo.focus();
+    staffName.focus();
   }
   function closeEmailModal(){
     emailModal.classList.remove('show');
@@ -593,7 +593,8 @@
   // Keep the scan input focused whenever possible, so a hardware
   // scanner (acting as a keyboard) can fire-and-forget without tapping.
   document.addEventListener('click', function(e){
-    if(e.target === scanInput || e.target.tagName === 'BUTTON' || e.target === emailTo) return;
+    if(emailModal.classList.contains('show')) return; // leave focus alone while the modal's open
+    if(e.target === scanInput || e.target.tagName === 'BUTTON') return;
     scanInput.focus();
   });
   window.addEventListener('load', function(){ scanInput.focus(); });
