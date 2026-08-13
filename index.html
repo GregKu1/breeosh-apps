@@ -135,10 +135,17 @@
 
   <div id="banner" class="banner"></div>
 
-  <div class="card product-status">
-    <span id="productStatusText">Material names not loaded.</span>
-    <button class="btn-ghost btn-small" id="importProductsBtn" type="button">Import Craftybase material list</button>
-    <input type="file" id="productFileInput" accept=".csv,text/csv" style="display:none;">
+  <div class="card">
+    <div class="product-status">
+      <span id="materialStatusText">Material names not loaded.</span>
+      <button class="btn-ghost btn-small" id="importMaterialsBtn" type="button">Import Craftybase material list</button>
+      <input type="file" id="materialFileInput" accept=".csv,text/csv" style="display:none;">
+    </div>
+    <div class="product-status" style="margin-top:10px;">
+      <span id="productStatusText">Product names not loaded.</span>
+      <button class="btn-ghost btn-small" id="importProductsBtn" type="button">Import Craftybase product list</button>
+      <input type="file" id="productFileInput" accept=".csv,text/csv" style="display:none;">
+    </div>
   </div>
 
   <div class="card">
@@ -191,10 +198,11 @@
 
   var STORAGE_KEY = "lotTrackerSession_v1";
   var EMAIL_KEY = "lotTrackerEmail_v1";
+  var MATERIALS_KEY = "lotTrackerMaterials_v1";
   var PRODUCTS_KEY = "lotTrackerProducts_v1";
 
   var state = {
-    recipe: null,   // { name, date, time }
+    recipe: null,   // { code, week } — code is the recipe's Craftybase PRODUCT SKU
     rows: []        // [{ sku, batch, time }]
   };
 
@@ -205,6 +213,14 @@
   // fills in names for anything already scanned this session.
   var materialNames = {};      // exact SKU match
   var materialNamesUpper = {}; // uppercased fallback, in case of a case mismatch
+
+  // SKU -> product name, imported from Craftybase's "Export product catalogue" CSV.
+  // The recipe barcode carries a Craftybase PRODUCT SKU as its short code (e.g. a
+  // loaf's own SKU, already assigned in Craftybase and already sitting in a cell on
+  // the recipe sheet) rather than a hand-invented code — nothing new to maintain,
+  // this just resolves that SKU back to a readable name for display/email.
+  var productNames = {};
+  var productNamesUpper = {};
 
   var scanInput = document.getElementById('scanInput');
   var addBtn = document.getElementById('addBtn');
@@ -224,6 +240,9 @@
   var emailTo = document.getElementById('emailTo');
   var emailCancelBtn = document.getElementById('emailCancelBtn');
   var emailSendBtn = document.getElementById('emailSendBtn');
+  var materialStatusText = document.getElementById('materialStatusText');
+  var importMaterialsBtn = document.getElementById('importMaterialsBtn');
+  var materialFileInput = document.getElementById('materialFileInput');
   var productStatusText = document.getElementById('productStatusText');
   var importProductsBtn = document.getElementById('importProductsBtn');
   var productFileInput = document.getElementById('productFileInput');
@@ -255,19 +274,29 @@
       // Staff name is deliberately never persisted — a different person may be
       // running the next batch, so it must be typed fresh each time.
 
+      var savedMaterials = localStorage.getItem(MATERIALS_KEY);
+      if(savedMaterials){
+        var mm = JSON.parse(savedMaterials);
+        if(mm && mm.names){
+          materialNames = mm.names;
+          rebuildMaterialsUpperIndex();
+          updateMaterialsStatus(mm.count || Object.keys(materialNames).length, mm.importedAt);
+        }
+      }
+
       var savedProducts = localStorage.getItem(PRODUCTS_KEY);
       if(savedProducts){
         var pp = JSON.parse(savedProducts);
         if(pp && pp.names){
-          materialNames = pp.names;
-          rebuildUpperIndex();
-          updateProductStatus(pp.count || Object.keys(materialNames).length, pp.importedAt);
+          productNames = pp.names;
+          rebuildProductsUpperIndex();
+          updateProductsStatus(pp.count || Object.keys(productNames).length, pp.importedAt);
         }
       }
     }catch(e){}
   }
 
-  function rebuildUpperIndex(){
+  function rebuildMaterialsUpperIndex(){
     materialNamesUpper = {};
     Object.keys(materialNames).forEach(function(sku){
       materialNamesUpper[sku.toUpperCase()] = materialNames[sku];
@@ -280,13 +309,36 @@
     return upper !== undefined ? upper : null;
   }
 
-  function updateProductStatus(count, importedAt){
+  function updateMaterialsStatus(count, importedAt){
     if(!count){
-      productStatusText.textContent = 'Material names not loaded.';
+      materialStatusText.textContent = 'Material names not loaded.';
       return;
     }
     var when = importedAt ? new Date(importedAt).toLocaleDateString() : '';
-    productStatusText.textContent = count + ' materials loaded' + (when ? ' (' + when + ')' : '') + '.';
+    materialStatusText.textContent = count + ' materials loaded' + (when ? ' (' + when + ')' : '') + '.';
+  }
+
+  function rebuildProductsUpperIndex(){
+    productNamesUpper = {};
+    Object.keys(productNames).forEach(function(sku){
+      productNamesUpper[sku.toUpperCase()] = productNames[sku];
+    });
+  }
+
+  function lookupProductName(sku){
+    if(!sku) return null;
+    if(productNames[sku] !== undefined) return productNames[sku];
+    var upper = productNamesUpper[sku.toUpperCase()];
+    return upper !== undefined ? upper : null;
+  }
+
+  function updateProductsStatus(count, importedAt){
+    if(!count){
+      productStatusText.textContent = 'Product names not loaded.';
+      return;
+    }
+    var when = importedAt ? new Date(importedAt).toLocaleDateString() : '';
+    productStatusText.textContent = count + ' products loaded' + (when ? ' (' + when + ')' : '') + '.';
   }
 
   // Minimal RFC4180-ish CSV parser: handles quoted fields containing commas
@@ -364,13 +416,71 @@
     }
 
     materialNames = names;
-    rebuildUpperIndex();
+    rebuildMaterialsUpperIndex();
+    var importedAt = Date.now();
+    try{
+      localStorage.setItem(MATERIALS_KEY, JSON.stringify({ names: names, count: count, importedAt: importedAt }));
+    }catch(e){}
+    updateMaterialsStatus(count, importedAt);
+    showBanner('ok', 'Loaded ' + count + ' material names.');
+    render();
+  }
+
+  importMaterialsBtn.addEventListener('click', function(){
+    materialFileInput.click();
+  });
+  materialFileInput.addEventListener('change', function(){
+    var file = materialFileInput.files && materialFileInput.files[0];
+    materialFileInput.value = '';
+    if(!file) return;
+    var reader = new FileReader();
+    reader.onload = function(){ importMaterialCsv(String(reader.result || '')); };
+    reader.onerror = function(){ showBanner('err', 'Could not read that file.'); };
+    reader.readAsText(file);
+  });
+
+  // Craftybase's product export uses "title" rather than "name" for the product's
+  // display name — everything else about the format matches the material export.
+  function importProductCsv(text){
+    text = text.replace(/^﻿/, '');
+    var rows = parseCsv(text).filter(function(r){ return r.length > 1 || (r.length === 1 && r[0] !== ''); });
+    if(rows.length < 2){
+      showBanner('err', 'That file did not look like a CSV with a header row and data.');
+      return;
+    }
+    var header = rows[0];
+    var skuCol = findColumn(header, 'sku');
+    var nameCol = findColumn(header, 'title');
+    if(nameCol === -1) nameCol = findColumn(header, 'name', 'category');
+    if(nameCol === -1) nameCol = findColumn(header, 'name');
+    if(skuCol === -1 || nameCol === -1){
+      showBanner('err', 'Could not find both a SKU column and a Title/Name column in that file\'s header row.');
+      return;
+    }
+
+    var names = {};
+    var count = 0;
+    for(var i = 1; i < rows.length; i++){
+      var r = rows[i];
+      var sku = (r[skuCol] || '').trim();
+      var name = (r[nameCol] || '').trim();
+      if(!sku || !name) continue;
+      names[sku] = name;
+      count++;
+    }
+    if(count === 0){
+      showBanner('err', 'That file had a SKU and Title/Name column, but no usable rows.');
+      return;
+    }
+
+    productNames = names;
+    rebuildProductsUpperIndex();
     var importedAt = Date.now();
     try{
       localStorage.setItem(PRODUCTS_KEY, JSON.stringify({ names: names, count: count, importedAt: importedAt }));
     }catch(e){}
-    updateProductStatus(count, importedAt);
-    showBanner('ok', 'Loaded ' + count + ' material names.');
+    updateProductsStatus(count, importedAt);
+    showBanner('ok', 'Loaded ' + count + ' product names.');
     render();
   }
 
@@ -382,7 +492,7 @@
     productFileInput.value = '';
     if(!file) return;
     var reader = new FileReader();
-    reader.onload = function(){ importMaterialCsv(String(reader.result || '')); };
+    reader.onload = function(){ importProductCsv(String(reader.result || '')); };
     reader.onerror = function(){ showBanner('err', 'Could not read that file.'); };
     reader.readAsText(file);
   });
@@ -393,12 +503,21 @@
     return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
   }
 
+  // state.recipe.code is a Craftybase product SKU. Resolve it to a readable name
+  // via the imported product list; fall back to the bare code if not found.
+  function recipeDisplayLabel(){
+    if(!state.recipe) return '';
+    var name = lookupProductName(state.recipe.code);
+    return name ? (name + ' (' + state.recipe.code + ')') : state.recipe.code;
+  }
+
   function render(){
     if(state.recipe){
       sessionEmpty.style.display = 'none';
       sessionInfo.style.display = 'block';
-      sessionRecipe.textContent = state.recipe.name;
-      sessionMeta.textContent = state.recipe.week;
+      sessionRecipe.textContent = recipeDisplayLabel();
+      sessionMeta.textContent = state.recipe.week +
+        (lookupProductName(state.recipe.code) ? '' : ' — product SKU not found, import the product list');
     } else {
       sessionEmpty.style.display = 'block';
       sessionInfo.style.display = 'none';
@@ -457,12 +576,12 @@
     finishBtn.disabled = !(state.recipe && state.rows.length > 0);
   }
 
-  function startSession(name, week){
-    state.recipe = { name: name, week: week };
+  function startSession(code, week){
+    state.recipe = { code: code, week: week };
     state.rows = [];
     save();
     render();
-    showBanner('ok', 'Started: ' + name);
+    showBanner('ok', 'Started: ' + recipeDisplayLabel());
   }
 
   function addRow(sku, batch){
@@ -473,10 +592,13 @@
   }
 
   // Recipe/command barcodes carry a reserved prefix rather than being told apart
-  // by pipe count — R-NAME-WKxx alone would otherwise be indistinguishable from
-  // an ingredient's SKU|BATCH. Printed via the "Libre Barcode 39 Text" Google
-  // Font, which needs Code39-safe characters (uppercase, no |/_) and requires a
-  // literal * at each end as the start/stop character — see the Sheets formula.
+  // by pipe count — R-CODE-WKxx alone would otherwise be indistinguishable from
+  // an ingredient's SKU|BATCH. CODE is the recipe's Craftybase product SKU (already
+  // assigned, already sitting in a cell on the recipe sheet — nothing new to
+  // maintain), resolved back to a name via the imported product list. Printed via
+  // the "Libre Barcode 39 Text" Google Font, which needs Code39-safe characters
+  // (uppercase, no |/_) and requires a literal * at each end as the start/stop
+  // character — see the Sheets formula.
   var RECIPE_PREFIX = 'R-';
 
   function handleScan(raw){
@@ -488,21 +610,22 @@
     if(value.indexOf(RECIPE_PREFIX) === 0){
       var rest = value.slice(RECIPE_PREFIX.length);
       var lastDash = rest.lastIndexOf('-');
-      var name = (lastDash === -1 ? rest : rest.slice(0, lastDash)).trim();
+      var code = (lastDash === -1 ? rest : rest.slice(0, lastDash)).trim();
       var week = (lastDash === -1 ? '' : rest.slice(lastDash + 1)).trim();
-      if(!name){
-        showBanner('err', 'That recipe barcode is missing a name.');
+      if(!code){
+        showBanner('err', 'That recipe barcode is missing a product code.');
         return;
       }
       if(state.rows.length > 0){
+        var newLabel = lookupProductName(code) ? (lookupProductName(code) + ' (' + code + ')') : code;
         var ok = window.confirm(
           'You have ' + state.rows.length + ' ingredient(s) scanned for "' +
-          (state.recipe ? state.recipe.name : 'the current recipe') +
-          '" that haven\'t been emailed yet.\n\nStart "' + name + '" anyway and lose that unsent list?'
+          (state.recipe ? recipeDisplayLabel() : 'the current recipe') +
+          '" that haven\'t been emailed yet.\n\nStart "' + newLabel + '" anyway and lose that unsent list?'
         );
         if(!ok){ showBanner('warn', 'Kept your current list. Finish & email it first.'); return; }
       }
-      startSession(name, week);
+      startSession(code, week);
       return;
     }
 
@@ -521,7 +644,7 @@
       return;
     }
 
-    showBanner('err', 'Unrecognised barcode: "' + value + '". Expected SKU|BATCH or ' + RECIPE_PREFIX + 'RECIPE-WKxx.');
+    showBanner('err', 'Unrecognised barcode: "' + value + '". Expected SKU|BATCH or ' + RECIPE_PREFIX + 'CODE-WKxx.');
   }
 
   function submitScan(){
@@ -599,9 +722,9 @@
       return;
     }
 
-    var subject = 'Lot log: ' + state.recipe.name + ' - ' + state.recipe.week;
+    var subject = 'Lot log: ' + recipeDisplayLabel() + ' - ' + state.recipe.week;
     var lines = [];
-    lines.push('Recipe: ' + state.recipe.name);
+    lines.push('Recipe: ' + recipeDisplayLabel());
     lines.push('Week: ' + state.recipe.week);
     lines.push('Staff: ' + staffName.value.trim());
     lines.push('');
