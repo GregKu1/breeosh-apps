@@ -88,9 +88,17 @@
   }
   .footer-actions button{flex:1;}
 
-  details.help{font-size:14px; color:var(--muted);}
-  details.help summary{cursor:pointer; font-weight:600; color:var(--ink);}
-  details.help code{background:#eef0f3; padding:1px 5px; border-radius:5px;}
+  .modal-overlay{
+    display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5);
+    align-items:flex-end; justify-content:center; z-index:10;
+  }
+  .modal-overlay.show{display:flex;}
+  .modal-card{
+    background:var(--card); border-radius:16px 16px 0 0; padding:18px;
+    width:100%; max-width:480px;
+  }
+  .modal-actions{display:flex; gap:10px; margin-top:14px;}
+  .modal-actions button{flex:1;}
 
   @media (prefers-color-scheme: dark){
     :root{
@@ -139,24 +147,20 @@
     <p id="rowsEmpty" class="session-empty" style="margin:6px 0 0;">Nothing scanned yet.</p>
   </div>
 
-  <div class="card">
-    <label for="emailTo">Send finished log to (remembered on this phone)</label>
-    <input type="email" id="emailTo" autocomplete="email" placeholder="you@example.com">
-  </div>
-
-  <details class="help card">
-    <summary>How this works</summary>
-    <p>Two barcode formats are recognised, told apart by how many <code>|</code> characters they contain:</p>
-    <ul>
-      <li><b>1 pipe</b> — <code>SKU|BATCH</code> — an ingredient label. Adds a row to the list.</li>
-      <li><b>2 pipes</b> — <code>RECIPE_NAME|DATE|TIME</code> — a recipe-sheet header. Starts a new session.</li>
-    </ul>
-    <p>Starting a new session while one is already in progress will ask you to confirm first, so an accidental re-scan can't wipe your list.</p>
-  </details>
-
   <div class="footer-actions">
     <button class="btn-ghost" id="resetBtn">Reset</button>
     <button class="btn-primary" id="finishBtn" disabled>Finish &amp; Email</button>
+  </div>
+
+  <div class="modal-overlay" id="emailModal">
+    <div class="modal-card">
+      <label for="emailTo">Send finished log to</label>
+      <input type="email" id="emailTo" autocomplete="email" placeholder="you@example.com">
+      <div class="modal-actions">
+        <button class="btn-ghost" id="emailCancelBtn">Cancel</button>
+        <button class="btn-primary" id="emailSendBtn">Send</button>
+      </div>
+    </div>
   </div>
 
 <script>
@@ -183,7 +187,10 @@
   var finishBtn = document.getElementById('finishBtn');
   var resetBtn = document.getElementById('resetBtn');
   var bannerEl = document.getElementById('banner');
+  var emailModal = document.getElementById('emailModal');
   var emailTo = document.getElementById('emailTo');
+  var emailCancelBtn = document.getElementById('emailCancelBtn');
+  var emailSendBtn = document.getElementById('emailSendBtn');
 
   function showBanner(kind, msg){
     bannerEl.className = 'banner show ' + kind;
@@ -361,8 +368,27 @@
     scanInput.focus();
   });
 
+  function openEmailModal(){
+    emailModal.classList.add('show');
+    emailTo.focus();
+  }
+  function closeEmailModal(){
+    emailModal.classList.remove('show');
+    scanInput.focus();
+  }
+
   finishBtn.addEventListener('click', function(){
     if(!state.recipe || state.rows.length === 0) return;
+    openEmailModal();
+  });
+
+  emailCancelBtn.addEventListener('click', closeEmailModal);
+  emailModal.addEventListener('click', function(e){
+    if(e.target === emailModal) closeEmailModal();
+  });
+
+  emailSendBtn.addEventListener('click', function(){
+    if(!state.recipe || state.rows.length === 0){ closeEmailModal(); return; }
 
     var subject = 'Lot log: ' + state.recipe.name + ' - ' + state.recipe.date + ' ' + state.recipe.time;
     var lines = [];
@@ -384,6 +410,7 @@
       '&body=' + encodeURIComponent(body);
 
     window.location.href = mailto;
+    closeEmailModal();
   });
 
   // Keep the scan input focused whenever possible, so a hardware
