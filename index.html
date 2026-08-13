@@ -81,6 +81,13 @@
     font-size:13px; font-weight:700; padding:3px 10px; border-radius:999px;
   }
 
+  .product-status{
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    font-size:13px; color:var(--muted);
+  }
+  .btn-small{font-size:13px; padding:8px 12px; border-radius:8px;}
+  .row-name-hint{color:var(--muted); font-size:12px; font-style:italic;}
+
   .footer-actions{
     position:fixed; left:0; right:0; bottom:0; background:var(--bg);
     border-top:1px solid var(--border); padding:10px 14px 16px;
@@ -121,6 +128,12 @@
   <p class="sub">Prototype — scan (or type) the recipe barcode to start, then each ingredient barcode as you add it.</p>
 
   <div id="banner" class="banner"></div>
+
+  <div class="card product-status">
+    <span id="productStatusText">Material names not loaded.</span>
+    <button class="btn-ghost btn-small" id="importProductsBtn" type="button">Import Craftybase material list</button>
+    <input type="file" id="productFileInput" accept=".csv,text/csv" style="display:none;">
+  </div>
 
   <div class="card">
     <div id="sessionEmpty" class="session-empty">No recipe started yet. Scan the recipe sheet's barcode to begin.</div>
@@ -169,11 +182,20 @@
 
   var STORAGE_KEY = "lotTrackerSession_v1";
   var EMAIL_KEY = "lotTrackerEmail_v1";
+  var PRODUCTS_KEY = "lotTrackerProducts_v1";
 
   var state = {
     recipe: null,   // { name, date, time }
     rows: []        // [{ sku, batch, time }]
   };
+
+  // SKU -> material name, imported from Craftybase's own "Export material catalogue"
+  // CSV. Using Craftybase's export (rather than Goods In's product DB) means every
+  // material Craftybase knows about is covered, not just ones that came in via a
+  // Goods In delivery. Kept separate from state.rows so a fresh import retroactively
+  // fills in names for anything already scanned this session.
+  var materialNames = {};      // exact SKU match
+  var materialNamesUpper = {}; // uppercased fallback, in case of a case mismatch
 
   var scanInput = document.getElementById('scanInput');
   var addBtn = document.getElementById('addBtn');
@@ -191,6 +213,9 @@
   var emailTo = document.getElementById('emailTo');
   var emailCancelBtn = document.getElementById('emailCancelBtn');
   var emailSendBtn = document.getElementById('emailSendBtn');
+  var productStatusText = document.getElementById('productStatusText');
+  var importProductsBtn = document.getElementById('importProductsBtn');
+  var productFileInput = document.getElementById('productFileInput');
 
   function showBanner(kind, msg){
     bannerEl.className = 'banner show ' + kind;
@@ -216,8 +241,137 @@
       }
       var savedEmail = localStorage.getItem(EMAIL_KEY);
       if(savedEmail) emailTo.value = savedEmail;
+
+      var savedProducts = localStorage.getItem(PRODUCTS_KEY);
+      if(savedProducts){
+        var pp = JSON.parse(savedProducts);
+        if(pp && pp.names){
+          materialNames = pp.names;
+          rebuildUpperIndex();
+          updateProductStatus(pp.count || Object.keys(materialNames).length, pp.importedAt);
+        }
+      }
     }catch(e){}
   }
+
+  function rebuildUpperIndex(){
+    materialNamesUpper = {};
+    Object.keys(materialNames).forEach(function(sku){
+      materialNamesUpper[sku.toUpperCase()] = materialNames[sku];
+    });
+  }
+
+  function lookupMaterialName(sku){
+    if(materialNames[sku] !== undefined) return materialNames[sku];
+    var upper = materialNamesUpper[sku.toUpperCase()];
+    return upper !== undefined ? upper : null;
+  }
+
+  function updateProductStatus(count, importedAt){
+    if(!count){
+      productStatusText.textContent = 'Material names not loaded.';
+      return;
+    }
+    var when = importedAt ? new Date(importedAt).toLocaleDateString() : '';
+    productStatusText.textContent = count + ' materials loaded' + (when ? ' (' + when + ')' : '') + '.';
+  }
+
+  // Minimal RFC4180-ish CSV parser: handles quoted fields containing commas
+  // and doubled "" escapes, which is what Craftybase's own CSV export uses.
+  function parseCsv(text){
+    var rows = [];
+    var row = [];
+    var field = '';
+    var inQuotes = false;
+    for(var i = 0; i < text.length; i++){
+      var c = text[i];
+      if(inQuotes){
+        if(c === '"'){
+          if(text[i + 1] === '"'){ field += '"'; i++; }
+          else { inQuotes = false; }
+        } else {
+          field += c;
+        }
+      } else if(c === '"'){
+        inQuotes = true;
+      } else if(c === ','){
+        row.push(field); field = '';
+      } else if(c === '\r'){
+        // skip, \n (if present) ends the row below
+      } else if(c === '\n'){
+        row.push(field); field = '';
+        rows.push(row); row = [];
+      } else {
+        field += c;
+      }
+    }
+    if(field.length || row.length){ row.push(field); rows.push(row); }
+    return rows;
+  }
+
+  function findColumn(header, mustInclude, mustNotInclude){
+    for(var i = 0; i < header.length; i++){
+      var h = header[i].toLowerCase();
+      if(h.indexOf(mustInclude) !== -1 && (!mustNotInclude || h.indexOf(mustNotInclude) === -1)){
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  function importMaterialCsv(text){
+    var rows = parseCsv(text).filter(function(r){ return r.length > 1 || (r.length === 1 && r[0] !== ''); });
+    if(rows.length < 2){
+      showBanner('err', 'That file did not look like a CSV with a header row and data.');
+      return;
+    }
+    var header = rows[0];
+    var skuCol = findColumn(header, 'sku');
+    var nameCol = findColumn(header, 'name', 'category');
+    if(nameCol === -1) nameCol = findColumn(header, 'name');
+    if(skuCol === -1 || nameCol === -1){
+      showBanner('err', 'Could not find both a SKU column and a Name column in that file\'s header row.');
+      return;
+    }
+
+    var names = {};
+    var count = 0;
+    for(var i = 1; i < rows.length; i++){
+      var r = rows[i];
+      var sku = (r[skuCol] || '').trim();
+      var name = (r[nameCol] || '').trim();
+      if(!sku || !name) continue;
+      names[sku] = name;
+      count++;
+    }
+    if(count === 0){
+      showBanner('err', 'That file had a SKU and Name column, but no usable rows.');
+      return;
+    }
+
+    materialNames = names;
+    rebuildUpperIndex();
+    var importedAt = Date.now();
+    try{
+      localStorage.setItem(PRODUCTS_KEY, JSON.stringify({ names: names, count: count, importedAt: importedAt }));
+    }catch(e){}
+    updateProductStatus(count, importedAt);
+    showBanner('ok', 'Loaded ' + count + ' material names.');
+    render();
+  }
+
+  importProductsBtn.addEventListener('click', function(){
+    productFileInput.click();
+  });
+  productFileInput.addEventListener('change', function(){
+    var file = productFileInput.files && productFileInput.files[0];
+    productFileInput.value = '';
+    if(!file) return;
+    var reader = new FileReader();
+    reader.onload = function(){ importMaterialCsv(String(reader.result || '')); };
+    reader.onerror = function(){ showBanner('err', 'Could not read that file.'); };
+    reader.readAsText(file);
+  });
 
   function nowTimeStr(){
     var d = new Date();
@@ -244,19 +398,29 @@
       state.rows.forEach(function(r, idx){
         var li = document.createElement('li');
 
+        var name = lookupMaterialName(r.sku);
+
         var main = document.createElement('div');
         main.className = 'row-main';
         var sku = document.createElement('div');
         sku.className = 'row-sku';
-        sku.textContent = r.sku;
+        sku.textContent = name || r.sku;
         var batch = document.createElement('div');
         batch.className = 'row-batch';
-        batch.textContent = 'Batch: ' + r.batch;
+        batch.textContent = name ? ('SKU ' + r.sku + ' · Batch ' + r.batch) : ('Batch: ' + r.batch);
+        main.appendChild(sku);
+        main.appendChild(batch);
+        if(!name){
+          var hint = document.createElement('div');
+          hint.className = 'row-name-hint';
+          hint.textContent = Object.keys(materialNames).length
+            ? 'Name not found for this SKU — check the imported list is up to date.'
+            : 'Import the Craftybase material list to show names.';
+          main.appendChild(hint);
+        }
         var time = document.createElement('div');
         time.className = 'row-time';
         time.textContent = 'Scanned ' + r.time;
-        main.appendChild(sku);
-        main.appendChild(batch);
         main.appendChild(time);
 
         var x = document.createElement('button');
@@ -398,7 +562,9 @@
     lines.push('');
     lines.push('Ingredients (' + state.rows.length + '):');
     state.rows.forEach(function(r){
-      lines.push('- ' + r.sku + '  batch: ' + r.batch + '  (scanned ' + r.time + ')');
+      var name = lookupMaterialName(r.sku);
+      var label = name ? (name + ' (SKU ' + r.sku + ')') : ('SKU ' + r.sku);
+      lines.push('- ' + label + '  batch: ' + r.batch + '  (scanned ' + r.time + ')');
     });
     lines.push('');
     lines.push('Sent from Lot Number Tracker prototype.');
