@@ -167,6 +167,8 @@
 
   <div class="modal-overlay" id="emailModal">
     <div class="modal-card">
+      <label for="staffName">Staff name</label>
+      <input type="text" id="staffName" autocomplete="name" placeholder="Your name" style="margin-bottom:14px;">
       <label for="emailTo">Send finished log to</label>
       <input type="email" id="emailTo" autocomplete="email" placeholder="you@example.com">
       <div class="modal-actions">
@@ -182,6 +184,7 @@
 
   var STORAGE_KEY = "lotTrackerSession_v1";
   var EMAIL_KEY = "lotTrackerEmail_v1";
+  var STAFF_KEY = "lotTrackerStaff_v1";
   var PRODUCTS_KEY = "lotTrackerProducts_v1";
 
   var state = {
@@ -210,6 +213,7 @@
   var resetBtn = document.getElementById('resetBtn');
   var bannerEl = document.getElementById('banner');
   var emailModal = document.getElementById('emailModal');
+  var staffName = document.getElementById('staffName');
   var emailTo = document.getElementById('emailTo');
   var emailCancelBtn = document.getElementById('emailCancelBtn');
   var emailSendBtn = document.getElementById('emailSendBtn');
@@ -241,6 +245,9 @@
       }
       var savedEmail = localStorage.getItem(EMAIL_KEY);
       if(savedEmail) emailTo.value = savedEmail;
+
+      var savedStaff = localStorage.getItem(STAFF_KEY);
+      if(savedStaff) staffName.value = savedStaff;
 
       var savedProducts = localStorage.getItem(PRODUCTS_KEY);
       if(savedProducts){
@@ -520,6 +527,10 @@
     try{ localStorage.setItem(EMAIL_KEY, emailTo.value.trim()); }catch(e){}
   });
 
+  staffName.addEventListener('change', function(){
+    try{ localStorage.setItem(STAFF_KEY, staffName.value.trim()); }catch(e){}
+  });
+
   resetBtn.addEventListener('click', function(){
     if(state.rows.length > 0 || state.recipe){
       var ok = window.confirm('Clear the current recipe and all scanned rows? This cannot be undone.');
@@ -560,15 +571,14 @@
     lines.push('Recipe: ' + state.recipe.name);
     lines.push('Date: ' + state.recipe.date);
     lines.push('Time: ' + state.recipe.time);
+    lines.push('Staff: ' + staffName.value.trim());
     lines.push('');
     lines.push('Ingredients (' + state.rows.length + '):');
     state.rows.forEach(function(r){
       var name = lookupMaterialName(r.sku);
-      var label = name ? (name + ' (SKU ' + r.sku + ')') : ('SKU ' + r.sku);
-      lines.push('- ' + label + '  batch: ' + r.batch + '  (scanned ' + r.time + ')');
+      var label = r.sku + (name ? ' ' + name : '');
+      lines.push(label + ' -> ' + r.batch + ' @ ' + r.time);
     });
-    lines.push('');
-    lines.push('Sent from Lot Number Tracker prototype.');
     var body = lines.join('\n');
 
     var to = emailTo.value.trim();
