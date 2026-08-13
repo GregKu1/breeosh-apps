@@ -393,19 +393,12 @@
     return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
   }
 
-  // The Sheets formula encodes the date as compact digits (20260813) to keep
-  // dashes free for use as the field separator. Reformat for display only.
-  function formatDate(d){
-    var m = /^(\d{4})(\d{2})(\d{2})$/.exec(d || '');
-    return m ? (m[1] + '-' + m[2] + '-' + m[3]) : (d || '');
-  }
-
   function render(){
     if(state.recipe){
       sessionEmpty.style.display = 'none';
       sessionInfo.style.display = 'block';
       sessionRecipe.textContent = state.recipe.name;
-      sessionMeta.textContent = formatDate(state.recipe.date);
+      sessionMeta.textContent = state.recipe.week;
     } else {
       sessionEmpty.style.display = 'block';
       sessionInfo.style.display = 'none';
@@ -464,8 +457,8 @@
     finishBtn.disabled = !(state.recipe && state.rows.length > 0);
   }
 
-  function startSession(name, date){
-    state.recipe = { name: name, date: date };
+  function startSession(name, week){
+    state.recipe = { name: name, week: week };
     state.rows = [];
     save();
     render();
@@ -480,11 +473,11 @@
   }
 
   // Recipe/command barcodes carry a reserved prefix rather than being told apart
-  // by pipe count — RECIPE-NAME-DATE alone would otherwise be indistinguishable
-  // from an ingredient's SKU|BATCH. Printed via the "Libre Barcode 39 Text" Google
+  // by pipe count — R-NAME-WKxx alone would otherwise be indistinguishable from
+  // an ingredient's SKU|BATCH. Printed via the "Libre Barcode 39 Text" Google
   // Font, which needs Code39-safe characters (uppercase, no |/_) and requires a
   // literal * at each end as the start/stop character — see the Sheets formula.
-  var RECIPE_PREFIX = 'RCP-';
+  var RECIPE_PREFIX = 'R-';
 
   function handleScan(raw){
     // Strip a literal leading/trailing * in case the scanner is configured to
@@ -496,7 +489,7 @@
       var rest = value.slice(RECIPE_PREFIX.length);
       var lastDash = rest.lastIndexOf('-');
       var name = (lastDash === -1 ? rest : rest.slice(0, lastDash)).trim();
-      var date = (lastDash === -1 ? '' : rest.slice(lastDash + 1)).trim();
+      var week = (lastDash === -1 ? '' : rest.slice(lastDash + 1)).trim();
       if(!name){
         showBanner('err', 'That recipe barcode is missing a name.');
         return;
@@ -509,7 +502,7 @@
         );
         if(!ok){ showBanner('warn', 'Kept your current list. Finish & email it first.'); return; }
       }
-      startSession(name, date);
+      startSession(name, week);
       return;
     }
 
@@ -528,7 +521,7 @@
       return;
     }
 
-    showBanner('err', 'Unrecognised barcode: "' + value + '". Expected SKU|BATCH or ' + RECIPE_PREFIX + 'RECIPE-DATE.');
+    showBanner('err', 'Unrecognised barcode: "' + value + '". Expected SKU|BATCH or ' + RECIPE_PREFIX + 'RECIPE-WKxx.');
   }
 
   function submitScan(){
@@ -606,10 +599,10 @@
       return;
     }
 
-    var subject = 'Lot log: ' + state.recipe.name + ' - ' + formatDate(state.recipe.date);
+    var subject = 'Lot log: ' + state.recipe.name + ' - ' + state.recipe.week;
     var lines = [];
     lines.push('Recipe: ' + state.recipe.name);
-    lines.push('Date: ' + formatDate(state.recipe.date));
+    lines.push('Week: ' + state.recipe.week);
     lines.push('Staff: ' + staffName.value.trim());
     lines.push('');
     lines.push('Ingredients (' + state.rows.length + '):');
