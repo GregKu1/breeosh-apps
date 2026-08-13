@@ -107,6 +107,12 @@
   .modal-actions{display:flex; gap:10px; margin-top:14px;}
   .modal-actions button{flex:1;}
 
+  .field-error{
+    display:none; color:var(--danger); font-size:13px; margin:6px 0 0;
+  }
+  .field-error.show{display:block;}
+  input.field-invalid{border-color:var(--danger);}
+
   @media (prefers-color-scheme: dark){
     :root{
       --bg:#111317; --card:#1c1f26; --ink:#f2f3f5; --muted:#9aa1ac;
@@ -168,8 +174,9 @@
   <div class="modal-overlay" id="emailModal">
     <div class="modal-card">
       <label for="staffName">Staff name</label>
-      <input type="text" id="staffName" autocomplete="name" placeholder="Your name" style="margin-bottom:14px;">
-      <label for="emailTo">Send finished log to</label>
+      <input type="text" id="staffName" autocomplete="name" placeholder="Your name">
+      <p id="staffNameError" class="field-error">Enter your name before sending.</p>
+      <label for="emailTo" style="margin-top:14px;">Send finished log to</label>
       <input type="email" id="emailTo" autocomplete="email" placeholder="you@example.com">
       <div class="modal-actions">
         <button class="btn-ghost" id="emailCancelBtn">Cancel</button>
@@ -214,6 +221,7 @@
   var bannerEl = document.getElementById('banner');
   var emailModal = document.getElementById('emailModal');
   var staffName = document.getElementById('staffName');
+  var staffNameError = document.getElementById('staffNameError');
   var emailTo = document.getElementById('emailTo');
   var emailCancelBtn = document.getElementById('emailCancelBtn');
   var emailSendBtn = document.getElementById('emailSendBtn');
@@ -530,6 +538,18 @@
   staffName.addEventListener('change', function(){
     try{ localStorage.setItem(STAFF_KEY, staffName.value.trim()); }catch(e){}
   });
+  staffName.addEventListener('input', function(){
+    if(staffName.value.trim()) clearStaffNameError();
+  });
+
+  function showStaffNameError(){
+    staffNameError.classList.add('show');
+    staffName.classList.add('field-invalid');
+  }
+  function clearStaffNameError(){
+    staffNameError.classList.remove('show');
+    staffName.classList.remove('field-invalid');
+  }
 
   resetBtn.addEventListener('click', function(){
     if(state.rows.length > 0 || state.recipe){
@@ -545,6 +565,7 @@
   });
 
   function openEmailModal(){
+    clearStaffNameError();
     emailModal.classList.add('show');
     staffName.focus();
   }
@@ -565,6 +586,12 @@
 
   emailSendBtn.addEventListener('click', function(){
     if(!state.recipe || state.rows.length === 0){ closeEmailModal(); return; }
+
+    if(!staffName.value.trim()){
+      showStaffNameError();
+      staffName.focus();
+      return;
+    }
 
     var subject = 'Lot log: ' + state.recipe.name + ' - ' + state.recipe.date + ' ' + state.recipe.time;
     var lines = [];
