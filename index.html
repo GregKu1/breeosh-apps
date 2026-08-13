@@ -320,6 +320,7 @@
   }
 
   function importMaterialCsv(text){
+    text = text.replace(/^﻿/, ''); // strip UTF-8 BOM if present, so column 0's header parses cleanly
     var rows = parseCsv(text).filter(function(r){ return r.length > 1 || (r.length === 1 && r[0] !== ''); });
     if(rows.length < 2){
       showBanner('err', 'That file did not look like a CSV with a header row and data.');
