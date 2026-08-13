@@ -191,7 +191,6 @@
 
   var STORAGE_KEY = "lotTrackerSession_v1";
   var EMAIL_KEY = "lotTrackerEmail_v1";
-  var STAFF_KEY = "lotTrackerStaff_v1";
   var PRODUCTS_KEY = "lotTrackerProducts_v1";
 
   var state = {
@@ -253,9 +252,8 @@
       }
       var savedEmail = localStorage.getItem(EMAIL_KEY);
       if(savedEmail) emailTo.value = savedEmail;
-
-      var savedStaff = localStorage.getItem(STAFF_KEY);
-      if(savedStaff) staffName.value = savedStaff;
+      // Staff name is deliberately never persisted — a different person may be
+      // running the next batch, so it must be typed fresh each time.
 
       var savedProducts = localStorage.getItem(PRODUCTS_KEY);
       if(savedProducts){
@@ -535,9 +533,6 @@
     try{ localStorage.setItem(EMAIL_KEY, emailTo.value.trim()); }catch(e){}
   });
 
-  staffName.addEventListener('change', function(){
-    try{ localStorage.setItem(STAFF_KEY, staffName.value.trim()); }catch(e){}
-  });
   staffName.addEventListener('input', function(){
     if(staffName.value.trim()) clearStaffNameError();
   });
@@ -565,6 +560,7 @@
   });
 
   function openEmailModal(){
+    staffName.value = '';
     clearStaffNameError();
     emailModal.classList.add('show');
     staffName.focus();
