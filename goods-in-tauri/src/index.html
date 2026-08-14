@@ -413,7 +413,8 @@
         <div class="grid2">
           <div class="field">
             <label>Supplier</label>
-            <input type="text" id="fSupplier" placeholder="">
+            <select id="fSupplier"></select>
+            <input type="text" id="fSupplierNew" placeholder="New supplier name" style="display:none; margin-top:6px;">
           </div>
           <div class="field" id="conversionField">
             <label>Craftybase qty per <span id="conversionUnitLabel">kg</span></label>
@@ -459,6 +460,11 @@
             <label>Supplier's invoice number (optional)</label>
             <input type="text" id="fInvoice" placeholder="">
           </div>
+        </div>
+        <div class="field">
+          <label>Notes (optional)</label>
+          <input type="text" id="fNotes" placeholder="Anything else worth recording about this line">
+          <span class="hint-inline">Appended to the Notes column in the Craftybase export, after the product name, brand and supplier invoice number.</span>
         </div>
 
         <div class="toolbar">
@@ -538,6 +544,7 @@
         <div class="toolbar">
           <input type="text" id="dbSearch" placeholder="Search by name, SKU or barcode…" style="max-width:320px;">
           <div class="spacer"></div>
+          <button class="ghost" id="manageSuppliersBtn">Manage suppliers</button>
           <button class="ghost" id="exportDbBtn">⬇ Export database CSV</button>
         </div>
         <div class="status-banner" id="dbPrintBanner"></div>
@@ -620,7 +627,8 @@
     <div class="grid3">
       <div class="field">
         <label>Supplier</label>
-        <input type="text" id="epSupplier">
+        <select id="epSupplier"></select>
+        <input type="text" id="epSupplierNew" placeholder="New supplier name" style="display:none; margin-top:6px;">
       </div>
       <div class="field" id="epConversionField">
         <label>Craftybase qty per <span id="epConversionUnitLabel">kg</span></label>
@@ -670,6 +678,19 @@
     <div class="toolbar">
       <button class="big" id="rpPrint">🖨 Print label</button>
       <button class="ghost" id="rpCancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="manageSuppliersModal">
+  <div class="modal">
+    <h3>Manage suppliers</h3>
+    <p style="color:var(--crust-soft); font-size:0.85rem; margin-top:0;">
+      Deleting a supplier just removes it from the dropdown for new items — products already using it keep their supplier as-is.
+    </p>
+    <div id="supplierListWrap"></div>
+    <div class="toolbar">
+      <button class="ghost" id="manageSuppliersClose">Close</button>
     </div>
   </div>
 </div>
@@ -734,9 +755,16 @@
       });
   }
 
+  // Suppliers offered in the dropdown are derived from the product database
+  // and today's lines rather than kept as their own list — this just tracks
+  // which of those names have been explicitly hidden ("deleted"), since
+  // that's the only part that needs remembering across restarts.
+  var DELETED_SUPPLIERS_KEY = 'gi_deleted_suppliers_v1';
+
   var state = {
     lines: loadJSON(LS_KEYS.lines, []),       // today's receiving lines
     db: loadJSON(DB_CACHE_KEY, {}),           // barcode -> {sku,name,unit,supplier,brand,gramsPerUnit} — refreshed from server on load
+    deletedSuppliers: loadJSON(DELETED_SUPPLIERS_KEY, []), // supplier names hidden from the dropdown
     pendingScan: null                          // {ean, fromDb}
   };
 
@@ -932,6 +960,103 @@
     return v.length >= 4 && !/\s/.test(v) && /[0-9]/.test(v);
   }
 
+  // ---------- GS1-128 (GTIN + batch + best-before packed into one scan) ----------
+  // Some ingredients carry a GS1-128 barcode instead of a plain EAN — it packs
+  // the product's GTIN, batch/lot and best-before date into a single scan, so
+  // the batch/BBE differ on every delivery and would never match a plain
+  // barcode lookup. Detected and unpacked here; anything that isn't
+  // GS1-128-shaped falls straight through to the normal barcode/name flow,
+  // completely unchanged.
+
+  // Length (in characters, after the 2-digit AI) of the Application
+  // Identifiers we know how to skip or use. null means variable-length,
+  // terminated by a GS (ASCII 29) separator or the end of the string. Only
+  // AIs plausible on a food ingredient label are listed — an AI outside this
+  // table aborts the parse rather than guessing how many characters to skip,
+  // so an unfamiliar label is treated as a normal (non-GS1) barcode instead
+  // of risking a mis-sliced batch/date.
+  var GS1_AI_LENGTHS = {
+    '00': 18, '01': 14, '02': 14,
+    '10': null,                                   // batch/lot — what we want
+    '11': 6, '12': 6, '13': 6, '15': 6, '17': 6,   // production/due/pack/best-before/expiry dates
+    '20': 2,
+    '21': null, '22': null,                        // serial / consumer product variant
+    '30': null, '37': null,                         // count
+    '90': null, '91': null, '92': null, '93': null, '94': null,
+    '95': null, '96': null, '97': null, '98': null, '99': null
+  };
+  var GS1_DATE_AIS = { '15': true, '17': true }; // best-before or expiry — either is treated as the BBE
+  var GS1_GS = String.fromCharCode(29); // ASCII group separator, ends a variable field early
+
+  function parseGs1YYMMDD(s){
+    var yy = parseInt(s.slice(0,2), 10);
+    var mm = parseInt(s.slice(2,4), 10);
+    var dd = parseInt(s.slice(4,6), 10);
+    if(isNaN(yy) || isNaN(mm) || isNaN(dd) || mm < 1 || mm > 12) return null;
+    var year = 2000 + yy; // labels are always near-future — no real century ambiguity here
+    // GS1 allows day "00" to mean "last day of the month".
+    var date = (dd === 0) ? new Date(year, mm, 0) : new Date(year, mm - 1, dd);
+    if(isNaN(date.getTime())) return null;
+    return date.getFullYear() + '-' + String(date.getMonth()+1).padStart(2,'0') + '-' + String(date.getDate()).padStart(2,'0');
+  }
+
+  // Returns {gtin, batch, bbe} when `raw` parses cleanly as GS1-128 data
+  // containing at least a GTIN (AI 01), or null if it isn't GS1-128-shaped at
+  // all, or uses an AI outside GS1_AI_LENGTHS — deliberately giving up rather
+  // than risk mis-slicing an unfamiliar label.
+  function parseGs1_128(raw){
+    var s = raw;
+    if(s.indexOf(']C1') === 0) s = s.slice(3); // AIM symbology prefix some scanners prepend
+    if(s.length < 4 || s.slice(0,2) !== '01') return null; // must open with a GTIN to be worth treating as GS1-128
+
+    var result = {};
+    var i = 0;
+    while(i < s.length){
+      var ai = s.slice(i, i+2);
+      if(!/^[0-9]{2}$/.test(ai) || !GS1_AI_LENGTHS.hasOwnProperty(ai)) return null;
+      i += 2;
+      var len = GS1_AI_LENGTHS[ai];
+      var value;
+      if(len === null){
+        var gsIdx = s.indexOf(GS1_GS, i);
+        var end = gsIdx === -1 ? s.length : gsIdx;
+        value = s.slice(i, end);
+        i = (gsIdx === -1) ? end : end + 1;
+      } else {
+        value = s.slice(i, i + len);
+        if(value.length < len) return null; // truncated — not a clean parse
+        i += len;
+      }
+      if(ai === '01') result.gtin = value;
+      else if(ai === '10') result.batch = value;
+      else if(GS1_DATE_AIS[ai] && !result.bbe){
+        var d = parseGs1YYMMDD(value);
+        if(d) result.bbe = d;
+      }
+    }
+    return result.gtin ? result : null;
+  }
+
+  // A GTIN may appear as a 12-digit UPC, 13-digit EAN or 14-digit GTIN
+  // depending on which of a product's labels was scanned — all the same
+  // product. Padding to 14 digits gives one consistent form to compare.
+  function normalizeGtin(v){
+    v = String(v || '').replace(/\D/g, '');
+    return v ? v.padStart(14, '0') : '';
+  }
+
+  // Finds a product already in the database by GTIN, independent of whether
+  // it was originally onboarded from a 12/13/14-digit barcode — so a GS1-128
+  // scan matches a product that was first added from its plain case barcode.
+  function findProductByGtin(gtin){
+    var norm = normalizeGtin(gtin);
+    if(!norm) return null;
+    for(var key in state.db){
+      if(!isNoBarcodeKey(key) && normalizeGtin(key) === norm) return key;
+    }
+    return null;
+  }
+
   // Not everything has a barcode — loose goods and a lot of trade
   // ingredients arrive with none at all. The product database is keyed by
   // barcode, so those get an internal key instead, tagged with this prefix
@@ -971,6 +1096,18 @@
         return;
       }
       clearNameSearch();
+
+      var gs1 = parseGs1_128(value);
+      if(gs1){
+        // Prefer a product already known under this exact GTIN, then fall
+        // back to one onboarded from a differently-lengthed barcode for the
+        // same GTIN (e.g. the case's 13-digit EAN). Only if neither exists
+        // is this treated as a brand-new product, keyed by the GTIN itself.
+        var gs1Key = state.db[gs1.gtin] ? gs1.gtin : (findProductByGtin(gs1.gtin) || gs1.gtin);
+        handleScan(gs1Key, { gs1: { batch: gs1.batch, bbe: gs1.bbe } });
+        return;
+      }
+
       handleScan(value);
       return;
     }
@@ -1045,13 +1182,43 @@
     document.getElementById('scanCard').style.display = show ? 'block' : 'none';
   }
 
+  // Batch/BBE read straight off a GS1-128 label — still editable, since a
+  // damaged or misread label shouldn't silently commit wrong data.
+  function applyGs1Prefill(opts){
+    if(!opts || !opts.gs1) return;
+    if(opts.gs1.batch) document.getElementById('fBatch').value = opts.gs1.batch;
+    if(opts.gs1.bbe) document.getElementById('fBBE').value = opts.gs1.bbe;
+  }
+
+  // Not every GS1-128 label encodes all three fields (e.g. one with just a
+  // GTIN and best-before, no batch) — say exactly what was actually read
+  // rather than always claiming both.
+  function gs1FieldNames(gs1){
+    var names = [];
+    if(gs1.batch) names.push('batch');
+    if(gs1.bbe) names.push('best-before');
+    return names;
+  }
+  function gs1PrefillSummary(gs1){
+    var names = gs1FieldNames(gs1);
+    if(!names.length) return '';
+    var label = names.join(' and ');
+    var plural = names.length > 1;
+    return label.charAt(0).toUpperCase() + label.slice(1) + ' ' + (plural ? 'were' : 'was') +
+      ' read from the barcode — please check ' + (plural ? 'them' : 'it') + '.';
+  }
+
   function handleScan(ean, opts){
     opts = opts || {};
     hideBanner('scanBanner');
     showScanBar(false);
+    var gs1Names = opts.gs1 ? gs1FieldNames(opts.gs1) : [];
     document.getElementById('scannedEanLine').innerHTML = isNoBarcodeKey(ean)
       ? '<span class="no-barcode-tag">No barcode</span> — this item is found by name'
-      : 'Barcode <b>' + escapeHtml(ean) + '</b>';
+      : (opts.gs1
+          ? 'GS1-128 barcode — GTIN <b>' + escapeHtml(ean) + '</b>' +
+            (gs1Names.length ? ' (' + gs1Names.join(' & ') + ' read automatically)' : '')
+          : 'Barcode <b>' + escapeHtml(ean) + '</b>');
     document.getElementById('productCard').style.display = 'block';
     document.getElementById('detailsCard').style.display = 'none';
     var lookupResult = document.getElementById('lookupResult');
@@ -1083,7 +1250,9 @@
       document.getElementById('newProductNameField').style.display = 'none';
       clearProductFields();
       fillProductFields(p);
-      showBanner('scanBanner','ok','Recognised from your product database. Confirm details below.');
+      applyGs1Prefill(opts);
+      showBanner('scanBanner','ok','Recognised from your product database.' +
+        (opts.gs1 && gs1PrefillSummary(opts.gs1) ? ' ' + gs1PrefillSummary(opts.gs1) : ' Confirm details below.'));
       document.getElementById('detailsCard').style.display = 'block';
       document.getElementById('fLots').focus();
       return;
@@ -1094,8 +1263,10 @@
     document.getElementById('productCardTitle').textContent = '2. New item — confirm the product';
     document.getElementById('newProductNameField').style.display = 'block';
     clearProductFields();
+    applyGs1Prefill(opts);
     lookupResult.innerHTML = '<div class="info"><b>New product — nothing to worry about</b><span>This barcode isn\'t in your product database yet. That\'s normal for bakery/trade ingredients. Enter details below just this once — it will be remembered from now on.</span></div>';
-    showBanner('scanBanner','ok','New item — please enter the product details below. This is expected for most raw ingredients.');
+    showBanner('scanBanner','ok','New item — please enter the product details below. This is expected for most raw ingredients.' +
+      (opts.gs1 && gs1PrefillSummary(opts.gs1) ? ' ' + gs1PrefillSummary(opts.gs1) : ''));
 
     document.getElementById('detailsCard').style.display = 'block';
   }
@@ -1122,6 +1293,112 @@
     }
   }
 
+  // ---------- Supplier dropdown ----------
+  // A free-text supplier field drifts into near-duplicates ("Acme", "Acme
+  // Ltd", "acme") that fragment reporting. Offering the suppliers already on
+  // record as a dropdown, with an explicit "add new" escape hatch, keeps
+  // naming consistent without ever blocking a genuinely new supplier.
+  function knownSuppliers(){
+    var set = {};
+    Object.keys(state.db).forEach(function(k){
+      var s = (state.db[k].supplier || '').trim();
+      if(s) set[s] = true;
+    });
+    state.lines.forEach(function(l){
+      var s = (l.supplier || '').trim();
+      if(s) set[s] = true;
+    });
+    state.deletedSuppliers.forEach(function(s){ delete set[s]; });
+    return Object.keys(set).sort(function(a,b){ return a.localeCompare(b); });
+  }
+
+  // ---------- Manage suppliers ----------
+  // "Deleting" a supplier only hides it from the dropdown going forward —
+  // products/lines that already used it keep that name untouched, and
+  // populateSupplierSelect() re-adds it (just for that field) if a record
+  // still references it, so nothing already saved is ever silently blanked.
+  function deleteSupplier(name){
+    if(state.deletedSuppliers.indexOf(name) === -1){
+      state.deletedSuppliers.push(name);
+      saveJSON(DELETED_SUPPLIERS_KEY, state.deletedSuppliers);
+    }
+  }
+
+  function renderSupplierList(){
+    var wrap = document.getElementById('supplierListWrap');
+    var suppliers = knownSuppliers();
+    if(!suppliers.length){
+      wrap.innerHTML = '<div class="empty">No suppliers recorded yet.</div>';
+      return;
+    }
+    wrap.innerHTML = '<table><tbody>' +
+      suppliers.map(function(s){
+        return '<tr><td>' + escapeHtml(s) + '</td>' +
+          '<td class="row-actions"><button class="del" data-del-supplier="' + escapeHtml(s) + '">Delete</button></td></tr>';
+      }).join('') + '</tbody></table>';
+
+    wrap.querySelectorAll('[data-del-supplier]').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        var name = btn.getAttribute('data-del-supplier');
+        confirmAction(
+          'Delete this supplier?',
+          '"' + name + '" will no longer appear in the supplier dropdown for new items. Products already using it keep this supplier name and remain unaffected.',
+          function(){
+            deleteSupplier(name);
+            renderSupplierList();
+          }
+        );
+      });
+    });
+  }
+
+  document.getElementById('manageSuppliersBtn').addEventListener('click', function(){
+    renderSupplierList();
+    document.getElementById('manageSuppliersModal').classList.add('show');
+  });
+  document.getElementById('manageSuppliersClose').addEventListener('click', function(){
+    document.getElementById('manageSuppliersModal').classList.remove('show');
+  });
+
+  function populateSupplierSelect(selectEl, newInputEl, selectedValue){
+    var suppliers = knownSuppliers();
+    var html = '<option value="">— Select supplier —</option>';
+    suppliers.forEach(function(s){
+      html += '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>';
+    });
+    html += '<option value="__new__">+ Add new supplier…</option>';
+    selectEl.innerHTML = html;
+    if(selectedValue && suppliers.indexOf(selectedValue) === -1){
+      // Not (yet) in the known list — add it rather than silently blank out
+      // existing data when the form is opened.
+      var opt = document.createElement('option');
+      opt.value = selectedValue;
+      opt.textContent = selectedValue;
+      selectEl.insertBefore(opt, selectEl.lastChild);
+    }
+    selectEl.value = selectedValue || '';
+    newInputEl.style.display = 'none';
+    newInputEl.value = '';
+  }
+
+  function supplierSelectValue(selectEl, newInputEl){
+    return selectEl.value === '__new__' ? newInputEl.value.trim() : selectEl.value;
+  }
+
+  function wireSupplierSelect(selectEl, newInputEl){
+    selectEl.addEventListener('change', function(){
+      if(selectEl.value === '__new__'){
+        newInputEl.style.display = 'block';
+        newInputEl.focus();
+      } else {
+        newInputEl.style.display = 'none';
+        newInputEl.value = '';
+      }
+    });
+  }
+  wireSupplierSelect(document.getElementById('fSupplier'), document.getElementById('fSupplierNew'));
+  wireSupplierSelect(document.getElementById('epSupplier'), document.getElementById('epSupplierNew'));
+
   function fillProductFields(p){
     document.getElementById('fProductName').value = p.name || '';
     document.getElementById('fSku').value = p.sku || '';
@@ -1129,7 +1406,7 @@
     ensureUnitOption(fUnit, p.unit);
     fUnit.value = p.unit || 'kg';
     document.getElementById('fBrand').value = p.brand || '';
-    document.getElementById('fSupplier').value = p.supplier || '';
+    populateSupplierSelect(document.getElementById('fSupplier'), document.getElementById('fSupplierNew'), p.supplier || '');
     document.getElementById('fConversion').value = (p.gramsPerUnit !== undefined && p.gramsPerUnit !== null) ? p.gramsPerUnit : '';
     document.getElementById('fLotSize').value = (p.lotSize !== undefined && p.lotSize !== null) ? p.lotSize : '';
     updateConversionUI();
@@ -1141,13 +1418,14 @@
     ensureUnitOption(document.getElementById('fUnit'), null); // drop any leftover legacy-unit option
     document.getElementById('fUnit').value = 'kg';
     document.getElementById('fBrand').value = '';
-    document.getElementById('fSupplier').value = '';
+    populateSupplierSelect(document.getElementById('fSupplier'), document.getElementById('fSupplierNew'), '');
     document.getElementById('fConversion').value = '';
     document.getElementById('fLots').value = '';
     document.getElementById('fLotSize').value = '';
     document.getElementById('fPrice').value = '';
     document.getElementById('fBatch').value = '';
     document.getElementById('fBBE').value = '';
+    document.getElementById('fNotes').value = '';
     // Everything on one delivery note shares a supplier invoice number, so
     // carry it across lines in the same app invoice instead of retyping it.
     // Read back off the lines themselves rather than storing it separately,
@@ -1258,7 +1536,7 @@
     var sku = document.getElementById('fSku').value.trim();
     var unit = document.getElementById('fUnit').value;
     var brand = document.getElementById('fBrand').value.trim();
-    var supplier = document.getElementById('fSupplier').value.trim();
+    var supplier = supplierSelectValue(document.getElementById('fSupplier'), document.getElementById('fSupplierNew'));
     var gramsPerUnit = parseFloat(document.getElementById('fConversion').value);
     var lots = parseFloat(document.getElementById('fLots').value);
     var lotSize = parseFloat(document.getElementById('fLotSize').value);
@@ -1266,6 +1544,7 @@
     var batch = document.getElementById('fBatch').value.trim();
     var bbe = document.getElementById('fBBE').value;
     var invoice = document.getElementById('fInvoice').value.trim();
+    var notes = document.getElementById('fNotes').value.trim();
 
     var missing = [];
     if(!name) missing.push('product name');
@@ -1303,7 +1582,7 @@
       price: pricePerLot,         // price per lot, as entered
       priceTotal: totalPrice,
       pricePerGram: pricePerGram,
-      batch: batch, bbe: bbe, invoice: invoice,
+      batch: batch, bbe: bbe, invoice: invoice, notes: notes,
       addedAt: new Date().toISOString()
     };
     state.lines.push(line);
@@ -1388,13 +1667,18 @@
         var du = daysUntil(l.bbe);
         if(du !== null && du < 0) expiryNote = ' <span class="pill warn">expired</span>';
         else if(du !== null && du <= 14) expiryNote = ' <span class="pill warn">soon</span>';
+        // For an items-unit line, qtyGrams is just the item count again (1:1
+        // conversion) — showing it a second time labelled "g total" would be
+        // both redundant and wrong, so that sub-line is skipped entirely.
         var qtyCell = l.lots ?
-          (l.lots + ' × ' + l.lotSize + ' ' + l.unit + '<br><span style="color:var(--crust-soft);font-size:0.78rem;">' + trimNum(l.qtyGrams) + ' g total</span>') :
+          (l.lots + ' × ' + l.lotSize + ' ' + l.unit + (l.unit === 'items' ? '' :
+            '<br><span style="color:var(--crust-soft);font-size:0.78rem;">' + trimNum(l.qtyGrams) + ' g total</span>')) :
           (l.qty + ' ' + escapeHtml(l.unit));
         var priceCell = '£' + Number(l.price).toFixed(2) + ' /lot' +
           (l.priceTotal !== undefined ? '<br><span style="color:var(--crust-soft);font-size:0.78rem;">£' + l.priceTotal.toFixed(2) + ' total</span>' : '');
         return '<tr class="' + (flagged?'flagged':'') + '" data-id="' + l.id + '">' +
-          '<td>' + escapeHtml(l.name) + '<br><span style="color:var(--crust-soft);font-size:0.78rem;">SKU ' + escapeHtml(l.sku) + (l.brand ? ' · ' + escapeHtml(l.brand) : '') + '</span></td>' +
+          '<td>' + escapeHtml(l.name) + '<br><span style="color:var(--crust-soft);font-size:0.78rem;">SKU ' + escapeHtml(l.sku) + (l.brand ? ' · ' + escapeHtml(l.brand) : '') + '</span>' +
+          (l.notes ? '<br><span style="color:var(--crust-soft);font-size:0.78rem;">📝 ' + escapeHtml(l.notes) + '</span>' : '') + '</td>' +
           '<td>' + qtyCell + '</td>' +
           '<td>' + escapeHtml(l.batch || '—') + '</td>' +
           '<td>' + fmtDate(l.bbe) + expiryNote + '</td>' +
@@ -1502,7 +1786,7 @@
       // supplier's invoice number — that's only entered separately per line,
       // so it isn't captured anywhere else in this file. Fold it into the
       // notes when present so it isn't lost on the way into Craftybase.
-      var notes = l.name + (l.brand ? ' — Brand: ' + l.brand : '') + (l.invoice ? ' — Supplier invoice: ' + l.invoice : '');
+      var notes = l.name + (l.brand ? ' — Brand: ' + l.brand : '') + (l.invoice ? ' — Supplier invoice: ' + l.invoice : '') + (l.notes ? ' — ' + l.notes : '');
       rows.push([
         dateStr,
         l.invoiceCode,
@@ -1526,7 +1810,7 @@
     // "Total (Craftybase qty)" / "Price per Craftybase unit" hold grams for
     // weight-tracked products but plain item counts for item(s)-unit ones —
     // whichever this line's product is actually configured as in Craftybase.
-    var header = ['Invoice Code (Craftybase)','Supplier Invoice Number','Date','Barcode','SKU','Product Name','Brand','Supplier','Lots','Size per lot','Unit','Total (unit)','Total (Craftybase qty)','Price per lot (£)','Total price (£)','Price per Craftybase unit (£)','Manufacturer Batch','Best Before'];
+    var header = ['Invoice Code (Craftybase)','Supplier Invoice Number','Date','Barcode','SKU','Product Name','Brand','Supplier','Lots','Size per lot','Unit','Total (unit)','Total (Craftybase qty)','Price per lot (£)','Total price (£)','Price per Craftybase unit (£)','Manufacturer Batch','Best Before','Notes'];
     var rows = [header.join(',')];
     var dayLabel = dayKey ? isoFromDayKey(dayKey) : todayStr();
     lines.forEach(function(l){
@@ -1535,7 +1819,7 @@
         l.lots||'', l.lotSize||'', l.unit, trimNum(l.qty), trimNum(l.qtyGrams!==undefined?l.qtyGrams:l.qty),
         Number(l.price).toFixed(2), (l.priceTotal!==undefined?l.priceTotal:l.price).toFixed(2),
         (l.pricePerGram!==undefined?l.pricePerGram.toFixed(6):''),
-        l.batch, l.bbe
+        l.batch, l.bbe, l.notes||''
       ].map(csvEscape).join(','));
     });
     return rows.join('\n');
@@ -1700,12 +1984,12 @@
     var rows = groupLinesByInvoice(lines).map(function(group, groupIdx){
       var dividerRow = '<tr class="invoice-divider"><td colspan="5">' +
         '<label class="invoice-check">' +
-        '<input type="checkbox" class="invoiceCheck" data-group="' + groupIdx + '" checked> ' +
+        '<input type="checkbox" class="invoiceCheck" data-group="' + groupIdx + '"> ' +
         '<span>' + invoiceDividerLabelHtml(group.code) + '</span>' +
         '</label></td></tr>';
       var groupRows = group.lines.map(function(l){
         var defaultCopies = (l.lots && l.lots > 0) ? Math.round(l.lots) : 1;
-        return '<tr><td><input type="checkbox" class="labelCheck" data-id="' + l.id + '" data-group="' + groupIdx + '" checked></td>' +
+        return '<tr><td><input type="checkbox" class="labelCheck" data-id="' + l.id + '" data-group="' + groupIdx + '"></td>' +
           '<td>' + escapeHtml(l.name) + ' <span style="color:var(--crust-soft);font-size:0.78rem;">('+escapeHtml(l.sku)+')</span></td>' +
           '<td>' + escapeHtml(l.batch||'—') + '</td><td>' + fmtDate(l.bbe) + '</td>' +
           '<td><input type="number" class="labelCopies" data-id="' + l.id + '" min="1" step="1" value="' + defaultCopies + '" style="width:60px; padding:6px 8px; font-size:0.9rem;"></td>' +
@@ -1930,7 +2214,11 @@
       entries = entries.filter(function(e){
         return (e.name||'').toLowerCase().indexOf(q)!==-1 ||
                (e.sku||'').toLowerCase().indexOf(q)!==-1 ||
-               e.ean.indexOf(q)!==-1;
+               // Was case-sensitive, which meant an all-digit EAN always
+               // matched regardless of case (there being none) but an
+               // alphanumeric barcode like "2MD0632" would only ever match
+               // itself typed in that exact case.
+               e.ean.toLowerCase().indexOf(q)!==-1;
       });
     }
     var wrap = document.getElementById('dbTableWrap');
@@ -2016,7 +2304,7 @@
     ensureUnitOption(epUnit, p.unit);
     epUnit.value = p.unit || 'kg';
     document.getElementById('epBrand').value = p.brand || '';
-    document.getElementById('epSupplier').value = p.supplier || '';
+    populateSupplierSelect(document.getElementById('epSupplier'), document.getElementById('epSupplierNew'), p.supplier || '');
     document.getElementById('epConversion').value = (p.gramsPerUnit !== undefined && p.gramsPerUnit !== null) ? p.gramsPerUnit : '';
     document.getElementById('epLotSize').value = (p.lotSize !== undefined && p.lotSize !== null) ? p.lotSize : '';
     updateEditUnitLabels();
@@ -2036,7 +2324,7 @@
     var sku = document.getElementById('epSku').value.trim();
     var unit = document.getElementById('epUnit').value;
     var brand = document.getElementById('epBrand').value.trim();
-    var supplier = document.getElementById('epSupplier').value.trim();
+    var supplier = supplierSelectValue(document.getElementById('epSupplier'), document.getElementById('epSupplierNew'));
     var gramsPerUnit = parseFloat(document.getElementById('epConversion').value);
     var lotSize = parseFloat(document.getElementById('epLotSize').value);
     var errEl = document.getElementById('epError');
