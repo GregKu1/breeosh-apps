@@ -1,0 +1,15 @@
+{
+  "name": "goods-in-tauri",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri",
+    "build:x64": "tauri build --target x86_64-pc-windows-msvc -c src-tauri/tauri.x64.conf.json",
+    "build:x86": "tauri build --target i686-pc-windows-msvc -c src-tauri/tauri.x86.conf.json",
+    "build:all": "npm run build:x64 && npm run build:x86"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
