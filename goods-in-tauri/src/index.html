@@ -236,7 +236,10 @@
   .dymo-label{
     width:var(--label-w, 89mm); height:var(--label-h, 36mm);
     border:1px solid #000;
-    padding: calc(var(--label-h, 36mm) * 0.24) calc(var(--label-w, 89mm) * 0.035) calc(var(--label-h, 36mm) * 0.04);
+    /* Right edge gets a touch more than left — text was printing flush enough
+       to the physical right edge that the last character (e.g. a trailing
+       "G") was getting clipped. */
+    padding: calc(var(--label-h, 36mm) * 0.24) calc(var(--label-w, 89mm) * 0.05) calc(var(--label-h, 36mm) * 0.04) calc(var(--label-w, 89mm) * 0.035);
     font-family: Arial, Helvetica, sans-serif;
     color:#000; background:#fff;
     display:flex; flex-direction:column; justify-content:space-between;
@@ -250,13 +253,38 @@
      the SKU/name row to nothing (the barcode, with visible overflow, keeps its
      size and the text silently disappears). Pin both rows instead. */
   .dymo-label .name{
-    font-size:calc(var(--label-h, 36mm) * 0.155);
+    font-size:calc(var(--label-h, 36mm) * 0.175);
     font-weight:800; line-height:1.15; text-transform:uppercase;
-    white-space:nowrap; overflow:hidden;
     display:flex; align-items:baseline; flex-shrink:0;
+    /* Long names wrap onto a 2nd line rather than forcing shrinkNameTextToFit()
+       to shave the font down to fit one line — max-height caps it at exactly
+       2 lines' worth so an extreme name still clips instead of pushing the
+       barcode off the label. */
+    max-height:calc(var(--label-h, 36mm) * 0.175 * 1.15 * 2);
+    overflow:hidden;
   }
-  .dymo-label .name .sku-part{flex-shrink:0;}
-  .dymo-label .name .name-part{min-width:0;}
+  .dymo-label .name .sku-part{flex-shrink:0; white-space:nowrap;}
+  .dymo-label .name .name-part{min-width:0; white-space:normal;}
+  /* Leftover stickers (see hideSku in printExpandedLabels) reserve a FIXED
+     height for the name — not a cap, an exact height — so the LOT/BBE row and
+     barcode below always sit in the same place no matter how big or small the
+     name text ends up. The split point is deliberately simple rather than
+     measured: the LOT/BBE row should start slightly above half way down the
+     label, and the name gets to use everything above that. Top padding is
+     already 24% of label height (see .dymo-label), so a name box of 22%
+     puts the LOT/BBE row's top edge at 24%+22% = 46% down the label — a flat,
+     predictable split instead of a value chased per label size.
+     fitStickerNameText() then grows or shrinks the font in JS to fill as much
+     of that box as the name allows: a short name prints much bigger than a
+     long one, but neither can move what's below it. align-items:flex-start
+     (not the inherited baseline, which only made sense next to a sku-part)
+     keeps it anchored to the top whether it ends up as one line or two. */
+  .dymo-label.dymo-label--sticker .name{
+    font-size:calc(var(--label-h, 36mm) * 0.16);
+    align-items:flex-start;
+    height:calc(var(--label-h, 36mm) * 0.22);
+    max-height:calc(var(--label-h, 36mm) * 0.22);
+  }
   .dymo-label .midrow{
     display:flex; justify-content:flex-start; gap:6mm; flex-wrap:wrap;
     font-size:calc(var(--label-h, 36mm) * 0.125); font-weight:700; margin-top:2px;
@@ -682,6 +710,55 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="stickerLabelModal">
+  <div class="modal">
+    <h3>Leftover sticker</h3>
+    <p id="stkProductLine" style="color:var(--crust-soft); font-size:0.9rem; margin-top:0;"></p>
+    <p id="stkError" style="color:var(--warn); font-weight:600; display:none;"></p>
+    <div class="grid2">
+      <div class="field">
+        <label>Batch / lot *</label>
+        <input type="text" id="stkBatch" placeholder="">
+      </div>
+      <div class="field">
+        <label>Best Before / Expiry *</label>
+        <input type="date" id="stkBBE">
+      </div>
+    </div>
+    <div class="field">
+      <label>Or set it relative to today</label>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <input type="number" id="stkBbeAmount" min="1" step="1" value="6" style="width:70px;">
+        <select id="stkBbeUnit">
+          <option value="days">day(s)</option>
+          <option value="weeks">week(s)</option>
+          <option value="months" selected>month(s)</option>
+        </select>
+        <span>from today</span>
+        <button type="button" class="ghost" id="stkBbeApply">Set</button>
+      </div>
+    </div>
+    <div class="grid2">
+      <div class="field">
+        <label>Label size</label>
+        <select id="stkLabelSize">
+          <option value="89x28">89 × 28mm (Dymo 99010)</option>
+          <option value="89x36">89 × 36mm (Dymo 99012)</option>
+          <option value="101x54">101 × 54mm (Dymo 99014)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Copies</label>
+        <input type="number" id="stkCopies" min="1" step="1" value="1">
+      </div>
+    </div>
+    <div class="toolbar">
+      <button class="big" id="stkPrint">🖨 Print label</button>
+      <button class="ghost" id="stkCancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="manageSuppliersModal">
   <div class="modal">
     <h3>Manage suppliers</h3>
@@ -1081,11 +1158,43 @@
     return isNoBarcodeKey(k) ? '' : k;
   }
 
+  // ---------- Leftover sticker (QR from the LOT tracker app) ----------
+  // The LOT tracker displays a QR code for leftover product (e.g. filling left
+  // over from a recipe) so staff can print a Dymo label for it without a
+  // database entry existing for that item. Payload: STK|<batchCode>|<name> —
+  // batchCode is ddmmyy-SKU, so the SKU is recovered by taking everything
+  // after the first dash. Not a product lookup at all — same "print straight
+  // from hand-entered fields" idea as the reprint-a-label flow.
+  var STICKER_PREFIX = 'STK|';
+
+  function parseStickerScan(raw){
+    var rest = raw.slice(STICKER_PREFIX.length);
+    var firstPipe = rest.indexOf('|');
+    if(firstPipe === -1) return null;
+    var batchCode = rest.slice(0, firstPipe).trim();
+    var name = rest.slice(firstPipe + 1).trim();
+    if(!batchCode || !name) return null;
+    var dash = batchCode.indexOf('-');
+    var sku = dash === -1 ? batchCode : batchCode.slice(dash + 1);
+    if(!sku) return null;
+    return { batchCode: batchCode, sku: sku, name: name };
+  }
+
   scanInput.addEventListener('keydown', function(e){
     if(e.key !== 'Enter') return;
     e.preventDefault();
     var value = scanInput.value.trim();
     if(!value) return;
+
+    // Leftover-sticker QR from the LOT tracker app — checked before
+    // looksLikeBarcode() since the payload's name portion can (and often
+    // will) contain spaces, which would otherwise misroute it into the
+    // name-search path below.
+    if(value.indexOf(STICKER_PREFIX) === 0){
+      scanInput.value = '';
+      handleStickerScan(value);
+      return;
+    }
 
     if(looksLikeBarcode(value)){
       // Extremely unlikely, but now that alphanumeric barcodes are accepted
@@ -1468,6 +1577,17 @@
     }
   }
   document.getElementById('fUnit').addEventListener('change', function(){
+    var unit = document.getElementById('fUnit').value;
+    if(!FIXED_CONVERSIONS.hasOwnProperty(unit)){
+      // Switching to a unit with no fixed conversion (l, ml) — whatever
+      // number is currently sitting in the field was for the *previous*
+      // unit (e.g. "1000" as grams-per-kg, or grams-per-litre) and means
+      // something completely different now. Silently keeping it produces a
+      // total that's wrong by whatever ratio the two conversions differ by,
+      // with no visual sign anything is off. Clear it so the user has to
+      // re-enter the right value for this specific unit.
+      document.getElementById('fConversion').value = '';
+    }
     updateConversionUI();
     updateQtyPreview();
   });
@@ -2136,8 +2256,16 @@
             'style="width:' + wMm + 'mm; height:' + hMm + 'mm;">';
         }catch(e){ /* leave blank if a value has unsupported characters */ }
       }
-      return '<div class="dymo-label">' +
-        '<div class="name"><span class="sku-part">' + escapeHtml(l.sku) + '&nbsp;</span><span class="name-part">' + escapeHtml(l.name) + '</span></div>' +
+      // hideSku (set by the leftover-sticker flow, where the batch is always
+      // ddmmyy-SKU) drops the redundant SKU prefix so the name gets the full
+      // width — it's still readable off the LOT line. Regular receiving
+      // labels keep it, since a supplier's own batch/lot rarely contains the
+      // SKU at all.
+      var nameRow = l.hideSku
+        ? '<div class="name"><span class="name-part">' + escapeHtml(l.name) + '</span></div>'
+        : '<div class="name"><span class="sku-part">' + escapeHtml(l.sku) + '&nbsp;</span><span class="name-part">' + escapeHtml(l.name) + '</span></div>';
+      return '<div class="dymo-label' + (l.hideSku ? ' dymo-label--sticker' : '') + '">' +
+        nameRow +
         '<div class="midrow"><span>LOT: ' + escapeHtml(l.batch) + '</span><span>BBE: ' + fmtDate(l.bbe) + '</span></div>' +
         '<div class="barcode-wrap">' + barcodeImg + '</div>' +
         '</div>';
@@ -2153,6 +2281,7 @@
     // the measurement so the widths are real, then hand display back to CSS.
     printArea.style.cssText = 'display:block; position:absolute; left:-10000px; top:0;';
     shrinkNameTextToFit();
+    fitStickerNameText();
     printArea.style.cssText = '';
 
     if(!barcodeLibOk){
@@ -2185,19 +2314,53 @@
   });
 
   function shrinkNameTextToFit(){
-    document.querySelectorAll('.dymo-label .name').forEach(function(nameRow){
+    // Stickers use fitStickerNameText() instead — a fixed-box grow-or-shrink
+    // fit rather than this shrink-only pass.
+    document.querySelectorAll('.dymo-label:not(.dymo-label--sticker) .name').forEach(function(nameRow){
       var nameSpan = nameRow.querySelector('.name-part');
       if(!nameSpan) return;
       var minSizePx = 6; // never shrink below this, to stay legible
       var stepPx = 0.5;
       var currentSizePx = parseFloat(getComputedStyle(nameSpan).fontSize);
       var guard = 0;
-      // Reduce the name's font size in small steps until the whole line
-      // (SKU + name) fits within the label's available width, or we hit the floor.
-      while(nameRow.scrollWidth > nameRow.clientWidth && currentSizePx > minSizePx && guard < 60){
+      // The name wraps onto a 2nd line by itself now (see .name-part's
+      // white-space:normal), so this only needs to step in for a name that's
+      // still too long to fit in 2 lines even at full size — reduce font size
+      // until it fits vertically within the row's 2-line cap, or hit the floor.
+      while(nameRow.scrollHeight > nameRow.clientHeight && currentSizePx > minSizePx && guard < 60){
         currentSizePx -= stepPx;
         nameSpan.style.fontSize = currentSizePx + 'px';
         guard++;
+      }
+    });
+  }
+
+  // Leftover stickers: .name is a fixed-height box set in CSS (the LOT/BBE
+  // row starts slightly above half way down the label, name gets everything
+  // above that — see the CSS comment above .dymo-label--sticker .name).
+  // This just grows the font from a small guaranteed-fit size up until it
+  // fills as much of that fixed box as the actual name allows, then backs
+  // off one step — a short name prints much bigger than a long one, but the
+  // box itself never changes size, so what's below it never moves.
+  function fitStickerNameText(){
+    document.querySelectorAll('.dymo-label--sticker .name').forEach(function(nameRow){
+      var nameSpan = nameRow.querySelector('.name-part');
+      if(!nameSpan) return;
+
+      var minSizePx = 6;
+      var maxSizePx = 60; // generous ceiling — the fixed box is the real limit
+      var stepPx = 0.5;
+      var sizePx = minSizePx;
+      nameSpan.style.fontSize = sizePx + 'px';
+      var guard = 0;
+      while(nameRow.scrollHeight <= nameRow.clientHeight && sizePx < maxSizePx && guard < 200){
+        sizePx += stepPx;
+        nameSpan.style.fontSize = sizePx + 'px';
+        guard++;
+      }
+      if(nameRow.scrollHeight > nameRow.clientHeight){
+        sizePx = Math.max(minSizePx, sizePx - stepPx);
+        nameSpan.style.fontSize = sizePx + 'px';
       }
     });
   }
@@ -2280,15 +2443,35 @@
     if(unit === 'items'){
       // Item counts have no meaningful "grams per item" — it's always 1:1
       // with whatever Craftybase counts it as, so there's nothing to enter.
-      convInput.value = 1;
+      convInput.value = FIXED_CONVERSIONS.items;
       convInput.disabled = true;
       convField.style.display = 'none';
     } else {
-      convInput.disabled = false;
       convField.style.display = '';
+      // Mirror the add-line form: kg/g have one unambiguous conversion, so
+      // don't let this screen save a different (and therefore wrong) value
+      // for them — it would just get silently overridden next time the
+      // product is scanned anyway, which is more confusing than locking it
+      // here too.
+      if(FIXED_CONVERSIONS.hasOwnProperty(unit)){
+        convInput.value = FIXED_CONVERSIONS[unit];
+        convInput.disabled = true;
+      } else {
+        convInput.disabled = false;
+      }
     }
   }
-  document.getElementById('epUnit').addEventListener('change', updateEditUnitLabels);
+  document.getElementById('epUnit').addEventListener('change', function(){
+    var unit = document.getElementById('epUnit').value;
+    if(!FIXED_CONVERSIONS.hasOwnProperty(unit)){
+      // Same stale-value trap as the add-line form: a number left over from
+      // a different unit (e.g. "1000" as grams-per-kg) means something else
+      // entirely once the unit is l/ml, and reusing it silently would save
+      // a wrong conversion into the product database. Force re-entry.
+      document.getElementById('epConversion').value = '';
+    }
+    updateEditUnitLabels();
+  });
 
   function openEditProduct(ean){
     var p = state.db[ean];
@@ -2418,6 +2601,95 @@
 
     reprintLabelModal.classList.remove('show');
     reprintProduct = null;
+  });
+
+  // ---------- Leftover sticker modal — opened by scanning an STK| QR code
+  // from the LOT tracker app. No product-database entry needed: SKU, name
+  // and batch all come straight off the scanned code, same as the reprint
+  // flow above but sourced from a scan instead of a database row. ----------
+  var stickerLabelModal = document.getElementById('stickerLabelModal');
+  var stickerProduct = null; // {sku, name, batchCode}
+
+  function addToDate(base, amount, unit){
+    var d = new Date(base.getFullYear(), base.getMonth(), base.getDate());
+    if(unit === 'weeks') d.setDate(d.getDate() + amount * 7);
+    else if(unit === 'months') d.setMonth(d.getMonth() + amount);
+    else d.setDate(d.getDate() + amount); // days
+    return d;
+  }
+
+  function applyStickerBbeOffset(){
+    var amount = parseInt(document.getElementById('stkBbeAmount').value, 10);
+    if(!amount || amount < 1) amount = 1;
+    var unit = document.getElementById('stkBbeUnit').value;
+    var d = addToDate(new Date(), amount, unit);
+    document.getElementById('stkBBE').value = d.getFullYear() + '-' +
+      String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+  document.getElementById('stkBbeApply').addEventListener('click', applyStickerBbeOffset);
+
+  function openStickerLabel(parsed){
+    stickerProduct = parsed;
+    document.getElementById('stkProductLine').textContent = parsed.name + ' — SKU ' + parsed.sku;
+    document.getElementById('stkError').style.display = 'none';
+    document.getElementById('stkBatch').value = parsed.batchCode;
+    document.getElementById('stkCopies').value = 1;
+    // Leftover stickers always go on 99010 (89x28mm, the smallest size) —
+    // default to it here regardless of whatever size the Outputs tab is
+    // currently set to, but leave it changeable for the odd exception.
+    document.getElementById('stkLabelSize').value = '89x28';
+    // Default best-before to 6 months out — the frozen shelf-life rule for
+    // leftover product — but every field here stays hand-editable in case
+    // that's wrong for a particular item.
+    document.getElementById('stkBbeAmount').value = 6;
+    document.getElementById('stkBbeUnit').value = 'months';
+    applyStickerBbeOffset();
+    stickerLabelModal.classList.add('show');
+  }
+
+  function handleStickerScan(raw){
+    var parsed = parseStickerScan(raw);
+    if(!parsed){
+      showBanner('scanBanner','warn','That leftover-sticker code looked malformed — could not read a batch and name from it.');
+      return;
+    }
+    clearNameSearch();
+    openStickerLabel(parsed);
+  }
+
+  document.getElementById('stkCancel').addEventListener('click', function(){
+    stickerLabelModal.classList.remove('show');
+    stickerProduct = null;
+  });
+
+  document.getElementById('stkPrint').addEventListener('click', function(){
+    if(!stickerProduct) return;
+
+    var batch = document.getElementById('stkBatch').value.trim();
+    var bbe = document.getElementById('stkBBE').value;
+    var copies = parseInt(document.getElementById('stkCopies').value, 10);
+    var sizeKey = document.getElementById('stkLabelSize').value;
+    var errEl = document.getElementById('stkError');
+
+    if(!batch || !bbe){
+      errEl.textContent = 'Enter both the batch/lot and the best before date.';
+      errEl.style.display = 'block';
+      return;
+    }
+    errEl.style.display = 'none';
+    if(!copies || copies < 1) copies = 1;
+
+    document.getElementById('labelSizeSelect').value = sizeKey;
+    applyLabelSize();
+
+    var expandedLines = [];
+    for(var i = 0; i < copies; i++){
+      expandedLines.push({ sku: stickerProduct.sku, name: stickerProduct.name, batch: batch, bbe: bbe, hideSku: true });
+    }
+    printExpandedLabels(expandedLines);
+
+    stickerLabelModal.classList.remove('show');
+    stickerProduct = null;
   });
 
   document.getElementById('exportDbBtn').addEventListener('click', function(){
