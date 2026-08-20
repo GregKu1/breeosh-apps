@@ -62,17 +62,16 @@
 
   .rows{list-style:none; margin:0; padding:0;}
   .rows li{
-    display:flex; align-items:center; justify-content:space-between; gap:10px;
-    padding:12px 4px; border-bottom:1px solid var(--border);
+    display:flex; align-items:center; justify-content:space-between; gap:8px;
+    padding:7px 4px; border-bottom:1px solid var(--border);
   }
   .rows li:last-child{border-bottom:none;}
   .row-main{min-width:0;}
-  .row-sku{font-weight:700; font-size:16px; word-break:break-all;}
-  .row-batch{color:var(--muted); font-size:14px; word-break:break-all;}
-  .row-time{color:var(--muted); font-size:12px;}
+  .row-sku{font-weight:700; font-size:14px; line-height:1.25; word-break:break-all;}
+  .row-batch{color:var(--muted); font-size:12px; line-height:1.25; word-break:break-all;}
   .row-x{
-    flex:none; width:38px; height:38px; border-radius:50%;
-    background:#fee2e2; color:var(--danger); font-size:18px; font-weight:700;
+    flex:none; width:30px; height:30px; border-radius:50%;
+    background:#fee2e2; color:var(--danger); font-size:15px; font-weight:700;
     display:flex; align-items:center; justify-content:center; padding:0; border:none;
   }
 
@@ -86,6 +85,18 @@
     font-size:13px; color:var(--muted);
   }
   .btn-small{font-size:13px; padding:8px 12px; border-radius:8px;}
+
+  .imports-card{padding:12px 16px;}
+  .imports-card summary{
+    font-size:14px; font-weight:600; cursor:pointer; list-style:none;
+    display:flex; align-items:center; justify-content:space-between;
+  }
+  .imports-card summary::-webkit-details-marker{display:none;}
+  .imports-card summary::after{content:'▸'; color:var(--muted); font-size:12px;}
+  .imports-card[open] summary::after{content:'▾';}
+  .imports-card[open] summary{margin-bottom:10px;}
+  .imports-card .product-status{margin-top:10px;}
+  .imports-card .product-status:first-of-type{margin-top:0;}
   .row-name-hint{color:var(--muted); font-size:12px; font-style:italic;}
 
   .footer-actions{
@@ -130,28 +141,26 @@
 </head>
 <body>
 
-  <h1>Lot Number Tracker</h1>
-  <p class="sub">Prototype — scan (or type) the recipe barcode to start, then each ingredient barcode as you add it.</p>
-
   <div id="banner" class="banner"></div>
 
-  <div class="card">
+  <details class="card imports-card">
+    <summary>Import lists</summary>
     <div class="product-status">
       <span id="materialStatusText">Material names not loaded.</span>
       <button class="btn-ghost btn-small" id="importMaterialsBtn" type="button">Import Craftybase material list</button>
       <input type="file" id="materialFileInput" accept=".csv,text/csv" style="display:none;">
     </div>
-    <div class="product-status" style="margin-top:10px;">
+    <div class="product-status">
       <span id="productStatusText">Product names not loaded.</span>
       <button class="btn-ghost btn-small" id="importProductsBtn" type="button">Import Craftybase product list</button>
       <input type="file" id="productFileInput" accept=".csv,text/csv" style="display:none;">
     </div>
-    <div class="product-status" style="margin-top:10px;">
+    <div class="product-status">
       <span id="componentStatusText">Component names not loaded.</span>
       <button class="btn-ghost btn-small" id="importComponentsBtn" type="button">Import Craftybase component list</button>
       <input type="file" id="componentFileInput" accept=".csv,text/csv" style="display:none;">
     </div>
-  </div>
+  </details>
 
   <div class="card">
     <div id="sessionEmpty" class="session-empty">No recipe started yet. Scan the recipe sheet's barcode to begin.</div>
@@ -164,7 +173,7 @@
   </div>
 
   <div class="card">
-    <label for="scanInput">Scan or type a barcode, then press Enter / Add</label>
+    <label for="scanInput">Scan a barcode</label>
     <div class="scan-row">
       <input type="text" id="scanInput" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" inputmode="none">
       <button class="btn-primary" id="addBtn">Add</button>
@@ -1401,7 +1410,7 @@ var QRCode;
         sku.textContent = name || r.sku;
         var batch = document.createElement('div');
         batch.className = 'row-batch';
-        batch.textContent = name ? ('SKU ' + r.sku + ' · Batch ' + r.batch) : ('Batch: ' + r.batch);
+        batch.textContent = (name ? ('SKU ' + r.sku + ' · Batch ' + r.batch) : ('Batch: ' + r.batch)) + ' · ' + r.time;
         main.appendChild(sku);
         main.appendChild(batch);
         if(!name){
@@ -1412,10 +1421,6 @@ var QRCode;
             : 'Import the Craftybase material/component/product lists to show names.';
           main.appendChild(hint);
         }
-        var time = document.createElement('div');
-        time.className = 'row-time';
-        time.textContent = 'Scanned ' + r.time;
-        main.appendChild(time);
 
         var x = document.createElement('button');
         x.className = 'row-x';
@@ -1575,23 +1580,6 @@ var QRCode;
       e.preventDefault();
       submitScan();
     }
-  });
-
-  // scanInput defaults to inputmode="none" so staying focused for the
-  // hardware scanner (see below) doesn't pop the on-screen keyboard. A
-  // deliberate tap on the field itself is the one case that should still
-  // bring the keyboard up, for the "or type" fallback in the label above —
-  // blur/refocus after switching inputmode is needed because some Android
-  // WebViews only re-evaluate whether to show the keyboard at focus time.
-  scanInput.addEventListener('click', function(){
-    if(scanInput.getAttribute('inputmode') === 'none'){
-      scanInput.removeAttribute('inputmode');
-      scanInput.blur();
-      scanInput.focus();
-    }
-  });
-  scanInput.addEventListener('blur', function(){
-    scanInput.setAttribute('inputmode', 'none');
   });
 
   emailTo.addEventListener('change', function(){
